@@ -32,8 +32,10 @@
 #include <sys/time.h>
 #endif
 
+#include "t_list.h"
+
 #include "option.h"
-#include "address.h"
+#include "coap_io.h"
 #include "prng.h"
 #include "pdu.h"
 #include "coap_time.h"
@@ -47,7 +49,11 @@ typedef struct coap_queue_t {
   unsigned char retransmit_cnt;	/* retransmission counter, will be removed when zero */
   unsigned int timeout;		/* the randomized timeout value */
 
+#if 0
+  int local_if_handle;		/**< handle for local interface */
   coap_address_t local;		/**< local address */
+#endif
+  coap_endpoint_t *local_if;	/**< the local interface */
   coap_address_t remote;	/**< remote address */
   coap_tid_t id;		/**< unique transaction id */
 
@@ -74,7 +80,8 @@ struct coap_async_state_t;
 #endif
 
 /** Message handler that is used as call-back in coap_context_t */
-typedef void (*coap_response_handler_t)(struct coap_context_t  *, 
+typedef void (*coap_response_handler_t)(struct coap_context_t *, 
+					const coap_endpoint_t *local_interface,
 					const coap_address_t *remote,
 					coap_pdu_t *sent,
 					coap_pdu_t *received,
@@ -97,11 +104,8 @@ typedef struct coap_context_t {
   struct coap_async_state_t *async_state;
 #endif /* WITHOUT_ASYNC */
   coap_queue_t *sendqueue, *recvqueue;
-#ifndef WITH_CONTIKI
-  int sockfd;			/**< send/receive socket */
-#else /* WITH_CONTIKI */
-  struct uip_udp_conn *conn;	/**< uIP connection object */
-  
+
+#ifdef WITH_CONTIKI
   struct etimer retransmit_timer; /**< fires when the next packet must be sent */
   struct etimer notify_timer;     /**< used to check resources periodically */
 #endif /* WITH_CONTIKI */
@@ -121,7 +125,21 @@ typedef struct coap_context_t {
   unsigned short observe;
 
   coap_response_handler_t response_handler;
+
+  /**
+   * Callback function for sending data. cb_write is set by
+   * coap_set_cb() with @c write as its third argument.
+   */
+  ssize_t (*cb_write)(const coap_endpoint_t *local_interface,
+		      const coap_address_t *remote, 
+		      unsigned char *data, size_t len);
 } coap_context_t;
+
+/** 
+ * Sets callbacks function. CB specifies which callback to
+ * set. Currently, only the write callback can be modified.
+ */
+#define coap_set_cb(ctx,cb,CB) do { (ctx)->cb_##CB = cb; } while(0)
 
 /**
  * Registers a new message handler that is called whenever a response
@@ -155,7 +173,38 @@ coap_queue_t *coap_peek_next( coap_context_t *context );
 coap_queue_t *coap_pop_next( coap_context_t *context );
 
 /* Creates a new coap_context_t object that will hold the CoAP stack status.  */
-coap_context_t *coap_new_context(const coap_address_t *listen_addr);
+coap_context_t *coap_new_context();
+
+#if 0
+/** 
+ * Attaches the given endpoint address @p ep as valid CoAP server
+ * address that is recognized by coap_read(). The attached endpoint
+ * address must be valid throughout the lifetime of the CoAP context
+ * or until it is removed using coap_remove_endpoint(). 
+ *
+ * @param ctx   The CoAP context to use.
+ * @param ep    The endpoint to attach.
+ */
+void coap_attach_endpoint(coap_context_t *ctx, coap_endpoint_t *ep);
+#endif
+
+#if 0
+/**
+ * Removes the endpoint with handle @p hnd and address @p addr from
+ * the context's list of recognized server addresses. This function
+ * returns the actual endpoint object that was registered with
+ * coap_attach_endpoint(), or @c NULL if not found.  Note that this
+ * function will not release the storage used by @p ep.
+ *
+ * @param ctx   The CoAP context to use.
+ * @param hnd   The endpoint's handle.
+ * @param addr  The endpoint's local interface address.
+ * @return The endpoint object that is registered with @p hnd 
+ *   and @p addr
+ */
+coap_endpoint_t *coap_remove_endpoint(coap_context_t *ctx, 
+    int hnd, coap_address_t *addr);
+#endif
 
 /** 
  * Returns a new message id and updates @p context->message_id
@@ -174,8 +223,13 @@ coap_new_message_id(coap_context_t *context) {
 #endif
 }
 
-/* CoAP stack context must be released with coap_free_context() */
-void coap_free_context( coap_context_t *context );
+/* CoAP stack context must be released with coap_free_context(). This
+ * function clears all entries from the receive queue and send queue
+ * and deletes the resources that have been registered with 
+ * @p context, and frees the attached endpoints.
+ * 
+ */
+void coap_free_context(coap_context_t *context);
 
 
 /**
@@ -189,6 +243,7 @@ void coap_free_context( coap_context_t *context );
  * @return The message id of the sent message or @c COAP_INVALID_TID on error.
  */
 coap_tid_t coap_send_confirmed(coap_context_t *context, 
+			       const coap_endpoint_t *local_interface,
 			       const coap_address_t *dst,
 			       coap_pdu_t *pdu);
 
@@ -223,6 +278,7 @@ coap_pdu_t *coap_new_error_response(coap_pdu_t *request,
  * @return The message id of the sent message or @c COAP_INVALID_TID on error.
  */
 coap_tid_t coap_send(coap_context_t *context, 
+		     const coap_endpoint_t *local_interface,
 		     const coap_address_t *dst, 
 		     coap_pdu_t *pdu);
 
@@ -245,6 +301,7 @@ coap_tid_t coap_send(coap_context_t *context,
  */
 coap_tid_t coap_send_error(coap_context_t *context, 
 			   coap_pdu_t *request,
+			   const coap_endpoint_t *local_interface,
 			   const coap_address_t *dst,
 			   unsigned char code,
 			   coap_opt_filter_t opts);
@@ -262,6 +319,7 @@ coap_tid_t coap_send_error(coap_context_t *context,
  */
 coap_tid_t
 coap_send_message_type(coap_context_t *context, 
+		       const coap_endpoint_t *local_interface,
 		       const coap_address_t *dst, 
 		       coap_pdu_t *request,
 		       unsigned char type);
@@ -278,6 +336,7 @@ coap_send_message_type(coap_context_t *context,
  * on error.
  */
 coap_tid_t coap_send_ack(coap_context_t *context, 
+			 const coap_endpoint_t *local_interface,
 			 const coap_address_t *dst, 
 			 coap_pdu_t *request);
 
@@ -295,21 +354,43 @@ coap_tid_t coap_send_ack(coap_context_t *context,
  */
 static inline coap_tid_t
 coap_send_rst(coap_context_t *context, 
+	      const coap_endpoint_t *local_interface,
 	      const coap_address_t *dst, 
 	      coap_pdu_t *request) {
-  return coap_send_message_type(context, dst, request, COAP_MESSAGE_RST);
+  return coap_send_message_type(context, local_interface, dst, 
+				request, COAP_MESSAGE_RST);
 }
 
 /** Handles retransmissions of confirmable messages */
 coap_tid_t coap_retransmit( coap_context_t *context, coap_queue_t *node );
 
+#if 0
 /**
  * Reads data from the network and tries to parse as CoAP PDU. On success, 0 is returned
  * and a new node with the parsed PDU is added to the receive queue in the specified context
  * object.
  */
-int coap_read( coap_context_t *context );
+int coap_read(coap_context_t *context, coap_endpoint_t *local_interface);
+#endif
 
+/**
+ * Parses and interprets a CoAP message with context @p ctx. This function
+ * returns @c 0 if the message was handled, or a value less than zero on
+ * error.
+ *
+ * @param ctx     The current CoAP context.
+ * @param local_interface The local interface where @p msg was received.
+ * @param remote  The remote peer that has sent the message.
+ * @param msg     The message data.
+ * @param msg_length The actual length of @p msg in bytes.
+ * @return @c 0 if message was handled successfully, or less than 
+ *              zero on error.
+ */
+int coap_handle_message(coap_context_t *ctx,
+			const coap_endpoint_t *local_interface,
+			const coap_address_t *remote, 
+			unsigned char *msg, size_t msg_len);
+  
 /** 
  * Calculates a unique transaction id from given arguments @p peer and
  * @p pdu. The id is returned in @p id.
@@ -370,8 +451,10 @@ coap_remove_transaction(coap_queue_t **queue, coap_tid_t id) {
  */
 coap_queue_t *coap_find_transaction(coap_queue_t *queue, coap_tid_t id);
 
+#if 0
 /** Dispatches the PDUs from the receive queue in given context. */
 void coap_dispatch( coap_context_t *context );
+#endif
 
 /** Returns 1 if there are no messages to send or to dispatch in the context's queues. */
 int coap_can_exit( coap_context_t *context );

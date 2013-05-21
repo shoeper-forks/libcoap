@@ -25,6 +25,8 @@
 
 int flags = 0;
 
+static coap_endpoint_t *local_interface = NULL;
+
 static unsigned char _token_data[8];
 str the_token = { 0, _token_data };
 
@@ -190,9 +192,9 @@ clear_obs(coap_context_t *ctx, const coap_address_t *remote) {
     }
 
     if (pdu->hdr->type == COAP_MESSAGE_CON)
-      tid = coap_send_confirmed(ctx, remote, pdu);
+      tid = coap_send_confirmed(ctx, local_interface, remote, pdu);
     else 
-      tid = coap_send(ctx, remote, pdu);
+      tid = coap_send(ctx, local_interface, remote, pdu);
     
     if (tid == COAP_INVALID_TID) {
       debug("clear_obs: error sending new request");
@@ -273,6 +275,7 @@ check_token(coap_pdu_t *received) {
 
 void
 message_handler(struct coap_context_t  *ctx, 
+		const coap_endpoint_t *local_interface, 
 		const coap_address_t *remote, 
 		coap_pdu_t *sent,
 		coap_pdu_t *received,
@@ -300,14 +303,14 @@ message_handler(struct coap_context_t  *ctx,
     /* drop if this was just some message, or send RST in case of notification */
     if (!sent && (received->hdr->type == COAP_MESSAGE_CON || 
 		  received->hdr->type == COAP_MESSAGE_NON))
-      coap_send_rst(ctx, remote, received);
+      coap_send_rst(ctx, local_interface, remote, received);
     return;
   }
 
   switch (received->hdr->type) {
   case COAP_MESSAGE_CON:
     /* acknowledge received response if confirmable (TODO: check Token) */
-    coap_send_ack(ctx, remote, received);
+    coap_send_ack(ctx, local_interface, remote, received);
     break;
   case COAP_MESSAGE_RST:
     info("got RST\n");
@@ -371,9 +374,9 @@ message_handler(struct coap_context_t  *ctx,
               COAP_OPT_BLOCK_SZX(block_opt)), buf);
 
 	  if (received->hdr->type == COAP_MESSAGE_CON)
-	    tid = coap_send_confirmed(ctx, remote, pdu);
+	    tid = coap_send_confirmed(ctx, local_interface, remote, pdu);
 	  else 
-	    tid = coap_send(ctx, remote, pdu);
+	    tid = coap_send(ctx, local_interface, remote, pdu);
 
 	  if (tid == COAP_INVALID_TID) {
 	    debug("message_handler: error sending new request");
@@ -405,7 +408,8 @@ message_handler(struct coap_context_t  *ctx,
   }
 
   /* finally send new request, if needed */
-  if (pdu && coap_send(ctx, remote, pdu) == COAP_INVALID_TID) {
+  if (pdu && coap_send(ctx, local_interface, remote, pdu) 
+      == COAP_INVALID_TID) {
     debug("message_handler: error sending response");
   }
   coap_delete_pdu(pdu);
@@ -508,7 +512,7 @@ join( coap_context_t *ctx, char *group_name ){
     }
   }
 
-  result = setsockopt( ctx->sockfd, IPPROTO_IPV6, IPV6_JOIN_GROUP,
+  result = setsockopt(local_interface->handle, IPPROTO_IPV6, IPV6_JOIN_GROUP,
 		       (char *)&mreq, sizeof(mreq) );
   if ( result < 0 )
     perror("join: setsockopt");
@@ -902,10 +906,17 @@ get_context(const char *node, const char *port) {
       addr.size = rp->ai_addrlen;
       memcpy(&addr.addr, rp->ai_addr, rp->ai_addrlen);
 
-      ctx = coap_new_context(&addr);
+      local_interface = coap_new_endpoint(&addr);
+      if (!local_interface)
+	continue;
+
+      ctx = coap_new_context();
       if (ctx) {
 	/* TODO: output address:port for successful binding */
 	goto finish;
+      } else {	
+	coap_free_endpoint(local_interface);
+	local_interface = NULL;
       }
     }
   }
@@ -915,6 +926,23 @@ get_context(const char *node, const char *port) {
  finish:
   freeaddrinfo(result);
   return ctx;
+}
+
+void
+handle_read(coap_context_t *ctx, coap_endpoint_t *local) {
+  static unsigned char buf[COAP_MAX_PDU_SIZE];
+  ssize_t bytes_read = -1;
+  coap_address_t remote;
+
+  coap_address_init(&remote);
+
+  bytes_read = coap_network_read(local, &remote, buf, sizeof(buf));
+  
+  if (bytes_read < 0) {
+    warn("coap_read: recvfrom");
+  } else {
+    coap_handle_message(ctx, local, &remote, buf, (size_t)bytes_read);
+  }
 }
 
 int
@@ -1095,9 +1123,9 @@ main(int argc, char **argv) {
 #endif
 
   if (pdu->hdr->type == COAP_MESSAGE_CON)
-    tid = coap_send_confirmed(ctx, &dst, pdu);
+    tid = coap_send_confirmed(ctx, local_interface, &dst, pdu);
   else 
-    tid = coap_send(ctx, &dst, pdu);
+    tid = coap_send(ctx, local_interface, &dst, pdu);
 
   if (pdu->hdr->type != COAP_MESSAGE_CON || tid == COAP_INVALID_TID)
     coap_delete_pdu(pdu);
@@ -1107,7 +1135,7 @@ main(int argc, char **argv) {
 
   while ( !(ready && coap_can_exit(ctx)) ) {
     FD_ZERO(&readfds);
-    FD_SET( ctx->sockfd, &readfds );
+    FD_SET(local_interface->handle, &readfds );
 
     nextpdu = coap_peek_next( ctx );
 
@@ -1132,14 +1160,13 @@ main(int argc, char **argv) {
       }
     }
 
-    result = select(ctx->sockfd + 1, &readfds, 0, 0, &tv);
+    result = select(local_interface->handle + 1, &readfds, 0, 0, &tv);
 
     if ( result < 0 ) {		/* error */
       perror("select");
     } else if ( result > 0 ) {	/* read from socket */
-      if ( FD_ISSET( ctx->sockfd, &readfds ) ) {
-	coap_read( ctx );	/* read received data */
-	coap_dispatch( ctx );	/* and dispatch PDUs from receivequeue */
+      if ( FD_ISSET(local_interface->handle, &readfds ) ) {
+	handle_read(ctx, local_interface);	/* read received data */
       }
     } else { /* timeout */
       coap_ticks(&now);

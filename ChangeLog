@@ -1,3 +1,16 @@
+2013-05-21  Olaf Bergmann  <bergmann@tzi.org>
+
+	* net.c: Changed various functions to pass the local interface
+	using the new coap_endpoint_t abstraction. The coap_context_t now
+	does not know anything about the read/write implementation
+	anymore. A callback function can be registered with a
+	coap_context_t object to modify the send function. Received
+	messages now are passed to libcoap using coap_handle_message().
+
+	* coap_io.c: network I/O functions
+
+	* coap_io.h: definition of virtual endpoint
+
 2013-02-01  Olaf Bergmann  <bergmann@tzi.org>
 
 	* coap_time.h (coap_clock_init_impl): fix invalid preprocessor

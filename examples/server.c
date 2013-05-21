@@ -33,6 +33,8 @@
 #define min(a,b) ((a) < (b) ? (a) : (b))
 #endif
 
+static coap_endpoint_t *local_interface = NULL;
+
 /* temporary storage for dynamic resource representations */
 static int quit = 0;
 
@@ -55,8 +57,9 @@ handle_sigint(int signum) {
    	      "Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>\n\n"
 
 void 
-hnd_get_index(coap_context_t  *ctx, struct coap_resource_t *resource, 
-	      coap_address_t *peer, coap_pdu_t *request, str *token,
+hnd_get_index(coap_context_t  *ctx, struct coap_resource_t *resource,
+	      const coap_endpoint_t *local, coap_address_t *peer, 
+	      coap_pdu_t *request, str *token,
 	      coap_pdu_t *response) {
   unsigned char buf[3];
 
@@ -73,7 +76,8 @@ hnd_get_index(coap_context_t  *ctx, struct coap_resource_t *resource,
 
 void 
 hnd_get_time(coap_context_t  *ctx, struct coap_resource_t *resource, 
-	     coap_address_t *peer, coap_pdu_t *request, str *token,
+	     const coap_endpoint_t *local, coap_address_t *peer,
+	     coap_pdu_t *request, str *token,
 	     coap_pdu_t *response) {
   coap_opt_iterator_t opt_iter;
   coap_opt_t *option;
@@ -91,9 +95,7 @@ hnd_get_time(coap_context_t  *ctx, struct coap_resource_t *resource,
 
   if (request != NULL &&
       coap_check_option(request, COAP_OPTION_OBSERVE, &opt_iter)) {
-    coap_add_observer(resource,
-		      peer,
-		      token);
+    coap_add_observer(resource, local, peer, token);
     coap_add_option(response, COAP_OPTION_OBSERVE, 0, NULL);
   }
   if (resource->dirty == 1)
@@ -137,7 +139,8 @@ hnd_get_time(coap_context_t  *ctx, struct coap_resource_t *resource,
 
 void 
 hnd_put_time(coap_context_t  *ctx, struct coap_resource_t *resource, 
-	     coap_address_t *peer, coap_pdu_t *request, str *token,
+	     const coap_endpoint_t *local, coap_address_t *peer, 
+	     coap_pdu_t *request, str *token,
 	     coap_pdu_t *response) {
   coap_tick_t t;
   size_t size;
@@ -169,8 +172,9 @@ hnd_put_time(coap_context_t  *ctx, struct coap_resource_t *resource,
 
 void 
 hnd_delete_time(coap_context_t  *ctx, struct coap_resource_t *resource, 
-	      coap_address_t *peer, coap_pdu_t *request, str *token,
-	      coap_pdu_t *response) {
+		const coap_endpoint_t *local, coap_address_t *peer, 
+		coap_pdu_t *request, str *token,
+		coap_pdu_t *response) {
   my_clock_base = 0;		/* mark clock as "deleted" */
   
   /* type = request->hdr->type == COAP_MESSAGE_CON  */
@@ -180,7 +184,8 @@ hnd_delete_time(coap_context_t  *ctx, struct coap_resource_t *resource,
 #ifndef WITHOUT_ASYNC
 void 
 hnd_get_async(coap_context_t  *ctx, struct coap_resource_t *resource, 
-	      coap_address_t *peer, coap_pdu_t *request, str *token,
+	      const coap_endpoint_t *local, coap_address_t *peer, 
+	      coap_pdu_t *request, str *token,
 	      coap_pdu_t *response) {
   coap_opt_iterator_t opt_iter;
   coap_opt_t *option;
@@ -238,7 +243,8 @@ check_async(coap_context_t  *ctx, coap_tick_t now) {
 
   coap_add_data(response, 4, (unsigned char *)"done");
 
-  if (coap_send(ctx, &async->peer, response) == COAP_INVALID_TID) {
+  if (coap_send(ctx, local_interface, &async->peer, response) 
+      == COAP_INVALID_TID) {
     debug("check_async: cannot send response for message %d\n", 
 	  response->hdr->id);
   }
@@ -329,10 +335,17 @@ get_context(const char *node, const char *port) {
       addr.size = rp->ai_addrlen;
       memcpy(&addr.addr, rp->ai_addr, rp->ai_addrlen);
 
+      local_interface = coap_new_endpoint(&addr);
+      if (!local_interface)
+	continue;
+
       ctx = coap_new_context(&addr);
       if (ctx) {
 	/* TODO: output address:port for successful binding */
 	goto finish;
+      } else {	
+	coap_free_endpoint(local_interface);
+	local_interface = NULL;
       }
     }
   }
@@ -342,6 +355,23 @@ get_context(const char *node, const char *port) {
  finish:
   freeaddrinfo(result);
   return ctx;
+}
+
+void
+handle_read(coap_context_t *ctx, coap_endpoint_t *local) {
+  static unsigned char buf[COAP_MAX_PDU_SIZE];
+  ssize_t bytes_read = -1;
+  coap_address_t remote;
+
+  coap_address_init(&remote);
+
+  bytes_read = coap_network_read(local, &remote, buf, sizeof(buf));
+  
+  if (bytes_read < 0) {
+    warn("coap_read: recvfrom");
+  } else {
+    coap_handle_message(ctx, local, &remote, buf, (size_t)bytes_read);
+  }
 }
 
 int
@@ -386,9 +416,15 @@ main(int argc, char **argv) {
 
   signal(SIGINT, handle_sigint);
 
+  if (!local_interface) {
+    coap_log(LOG_EMERG, "cannot get socket for local interface\n");
+    coap_free_context(ctx);
+    return -1;
+  }
+  
   while ( !quit ) {
     FD_ZERO(&readfds);
-    FD_SET( ctx->sockfd, &readfds );
+    FD_SET(local_interface->handle, &readfds);
 
     nextpdu = coap_peek_next( ctx );
 
@@ -414,9 +450,8 @@ main(int argc, char **argv) {
       if (errno != EINTR)
 	perror("select");
     } else if ( result > 0 ) {	/* read from socket */
-      if ( FD_ISSET( ctx->sockfd, &readfds ) ) {
-	coap_read( ctx );	/* read received data */
-	coap_dispatch( ctx );	/* and dispatch PDUs from receivequeue */
+      if (FD_ISSET(local_interface->handle, &readfds)) {
+	handle_read(ctx, local_interface); /* read received data */
       }
     } else {			/* timeout */
       /* coap_check_resource_list( ctx ); */
@@ -433,7 +468,7 @@ main(int argc, char **argv) {
 #endif /* WITHOUT_OBSERVE */
   }
 
-  coap_free_context( ctx );
+  coap_free_context(ctx);
 
   return 0;
 }

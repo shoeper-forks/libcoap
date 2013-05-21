@@ -472,7 +472,8 @@ coap_find_observer(coap_resource_t *resource, const coap_address_t *peer,
 }
 
 coap_subscription_t *
-coap_add_observer(coap_resource_t *resource, 
+coap_add_observer(coap_resource_t *resource,
+		  const coap_endpoint_t *local_interface,
 		  const coap_address_t *observer,
 		  const str *token) {
   coap_subscription_t *s;
@@ -498,6 +499,7 @@ coap_add_observer(coap_resource_t *resource,
     return NULL;
 
   coap_subscription_init(s);
+  s->local_if = (coap_endpoint_t *)local_interface;
   memcpy(&s->subscriber, observer, sizeof(coap_address_t));
   
   if (token && token->length) {
@@ -596,13 +598,13 @@ coap_check_notify(coap_context_t *context) {
 	  response->hdr->type = COAP_MESSAGE_CON;
 
 	/* fill with observer-specific data */
-	h(context, r, &obs->subscriber, NULL, &token, response);
+	h(context, r, obs->local_if, &obs->subscriber, NULL, &token, response);
 
 	if (response->hdr->type == COAP_MESSAGE_CON) {
-	  tid = coap_send_confirmed(context, &obs->subscriber, response);
+	  tid = coap_send_confirmed(context, obs->local_if, &obs->subscriber, response);
 	  obs->non_cnt = 0;
 	} else {
-	  tid = coap_send(context, &obs->subscriber, response);
+	  tid = coap_send(context, obs->local_if, &obs->subscriber, response);
 	  obs->non_cnt++;
 	}
 
