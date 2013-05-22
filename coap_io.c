@@ -40,20 +40,19 @@
 
 #ifdef WITH_CONTIKI
 struct coap_contiki_endpoint_t {
-  struct list *next;
   int handle;
   coap_address_t addr;
   struct uip_udp_conn *conn;	/**< uIP connection object */
 };
 
-static inline coap_posix_endpoint_t *
+static inline coap_contiki_endpoint_t *
 coap_malloc_contiki_endpoint() {
   /* FIXME */
   return NULL;
 }
 
 static inline void
-coap_free_contiki_endpoint(coap_posix_endpoint_t *ep) {
+coap_free_contiki_endpoint(coap_endpoint_t *ep) {
   /* FIXME */
 }
 
@@ -83,7 +82,6 @@ coap_free_endpoint(coap_endpoint_t *ep) {
 
 #else /* WITH_CONTIKI */
 struct coap_posix_endpoint_t {
-  struct list *next;
   int handle;
   coap_address_t addr;
   int ifindex;
@@ -102,7 +100,7 @@ coap_free_posix_endpoint(struct coap_posix_endpoint_t *ep) {
 coap_endpoint_t *
 coap_new_endpoint(const coap_address_t *addr) {
   int sockfd = socket(addr->addr.sa.sa_family, SOCK_DGRAM, 0);
-  int reuse = 1;
+  int on = 1;
   struct coap_posix_endpoint_t *ep;
 
   if (sockfd < 0) {
@@ -110,11 +108,18 @@ coap_new_endpoint(const coap_address_t *addr) {
     return NULL;
   }
 
-  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, 
-		 &reuse, sizeof(reuse) ) < 0) {
+  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
     coap_log(LOG_WARN, "coap_new_endpoint: setsockopt SO_REUSEADDR");
-  }
 
+  on = 1;
+#ifdef IPV6_RECVPKTINFO
+  if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on)) < 0)
+    coap_log(LOG_ALERT, "coap_new_endpoint: setsockopt IPV6_RECVPKTINFO\n");
+#else /* IPV6_RECVPKTINFO */
+  if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_PKTINFO, &on, sizeof(on)) < 0)
+    coap_log(LOG_ALERT, "coap_new_endpoint: setsockopt IPV6_PKTINFO\n");
+#endif /* IPV6_RECVPKTINFO */
+      
   if (bind(sockfd, &addr->addr.sa, addr->size) < 0) {
     coap_log(LOG_WARN, "coap_new_endpoint: bind");
     close (sockfd);
