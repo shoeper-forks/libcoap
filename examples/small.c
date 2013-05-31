@@ -100,7 +100,7 @@ get_key(struct dtls_context_t *ctx,
 
   static const dtls_key_t psk = {
     .type = DTLS_KEY_PSK,
-    .key.psk.id = (unsigned char *)"coap", 
+    .key.psk.id = (unsigned char *)"Client_identity", 
     .key.psk.id_length = 15,
     .key.psk.key = (unsigned char *)"secretPSK", 
     .key.psk.key_length = 9
