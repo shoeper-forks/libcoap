@@ -68,6 +68,55 @@ void run(small_context_t *);
 ssize_t send_to_peer(const coap_endpoint_t *local_interface,
 		     const coap_address_t *remote, 
 		     unsigned char *data, size_t len);
+
+int
+dtls_application_data(struct dtls_context_t *ctx, 
+		      session_t *session, uint8 *data, size_t len) {
+
+  /* FIXME: pass data to coap_handle_message */
+  return -1;
+  /* return coap_handle_message(ctx->coap_context,  */
+  /* 			     local, &remote, */
+  /* 			     (unsigned char *)data, len); */
+}
+
+int
+dtls_send_to_peer(struct dtls_context_t *ctx, 
+	     session_t *session, uint8 *data, size_t len) {
+
+  /* FIXME: call coap_network_send(local_interface, remote, data, len); */
+  return -1;
+}
+
+
+/* This function is the "key store" for tinyDTLS. It is called to
+ * retrieve a key for the given identiy within this particular
+ * session. */
+int
+get_key(struct dtls_context_t *ctx, 
+	const session_t *session, 
+	const unsigned char *id, size_t id_len, 
+	const dtls_key_t **result) {
+
+  static const dtls_key_t psk = {
+    .type = DTLS_KEY_PSK,
+    .key.psk.id = (unsigned char *)"coap", 
+    .key.psk.id_length = 15,
+    .key.psk.key = (unsigned char *)"secretPSK", 
+    .key.psk.key_length = 9
+  };
+   
+  *result = &psk;
+  return 0;
+}
+
+static dtls_handler_t cb = {
+  .write = dtls_send_to_peer,
+  .read  = dtls_application_data,
+  .event = NULL,
+  .get_key = get_key
+};
+
 #endif
 
 /*---------------------------------------------------------------------------*/
@@ -81,6 +130,8 @@ main(int argc, char **argv) {
   context.dtls_context = dtls_new_context(&context);
   if (!context.dtls_context)
     exit(EXIT_FAILURE);			/* error */
+
+  dtls_set_handler(context.dtls_context, &cb);
 #endif
 
   /* first, we need a coap_context to work with */
