@@ -186,8 +186,9 @@ handle_read(small_context_t *ctx, coap_endpoint_t *local) {
     }
     
 #if HAVE_LIBTINYDTLS
-  dtls_handle_message(ctx->dtls_context, (session_t *)&src,
-    (uint8 *)buf, bytes_read);
+    dtls_handle_message(ctx->dtls_context, (session_t *)&local->addr,
+      (uint8 *)buf, bytes_read);
+
 #else
   coap_handle_message(ctx->coap_context, local, &remote,
     buf, (size_t)bytes_read);

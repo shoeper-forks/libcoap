@@ -34,6 +34,7 @@
 typedef struct coap_endpoint_t {
   int handle;	       /**< opaque handle to identify this endpoint */
   coap_address_t addr; /**< local interface address */
+  int ifindex;
 } coap_endpoint_t;
 
 coap_endpoint_t *coap_new_endpoint(const coap_address_t *addr);

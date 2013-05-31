@@ -81,19 +81,13 @@ coap_free_endpoint(coap_endpoint_t *ep) {
 }
 
 #else /* WITH_CONTIKI */
-struct coap_posix_endpoint_t {
-  int handle;
-  coap_address_t addr;
-  int ifindex;
-};
-
-static inline struct coap_posix_endpoint_t *
+static inline struct coap_endpoint_t *
 coap_malloc_posix_endpoint() {
-  return (struct coap_posix_endpoint_t *)coap_malloc(sizeof(struct coap_posix_endpoint_t));
+  return (struct coap_endpoint_t *)coap_malloc(sizeof(struct coap_endpoint_t));
 }
 
 static inline void
-coap_free_posix_endpoint(struct coap_posix_endpoint_t *ep) {
+coap_free_posix_endpoint(struct coap_endpoint_t *ep) {
   coap_free(ep);
 }
 
@@ -101,7 +95,7 @@ coap_endpoint_t *
 coap_new_endpoint(const coap_address_t *addr) {
   int sockfd = socket(addr->addr.sa.sa_family, SOCK_DGRAM, 0);
   int on = 1;
-  struct coap_posix_endpoint_t *ep;
+  struct coap_endpoint_t *ep;
 
   if (sockfd < 0) {
     coap_log(LOG_WARN, "coap_new_endpoint: socket");
@@ -133,7 +127,7 @@ coap_new_endpoint(const coap_address_t *addr) {
     return NULL;
   }
 
-  memset(ep, 0, sizeof(struct coap_posix_endpoint_t));
+  memset(ep, 0, sizeof(struct coap_endpoint_t));
   ep->handle = sockfd;
   memcpy(&ep->addr, addr, sizeof(coap_address_t));
   
@@ -145,7 +139,7 @@ coap_free_endpoint(coap_endpoint_t *ep) {
   if(ep) {
     if (ep->handle >= 0)
       close(ep->handle);
-    coap_free_posix_endpoint((struct coap_posix_endpoint_t *)ep);
+    coap_free_posix_endpoint((struct coap_endpoint_t *)ep);
   }
 }
 
@@ -174,8 +168,8 @@ coap_network_send(const coap_endpoint_t *local_interface,
 		  unsigned char *data,
 		  size_t datalen) {
 #ifndef WITH_CONTIKI
-  struct coap_posix_endpoint_t *ep = 
-    (struct coap_posix_endpoint_t *)local_interface;
+  struct coap_endpoint_t *ep = 
+    (struct coap_endpoint_t *)local_interface;
   /* a buffer large enough to hold all protocol address types */
   char buf[CMSG_LEN(sizeof(struct sockaddr_storage))];
   struct msghdr mhdr;
@@ -266,8 +260,7 @@ coap_network_read(coap_endpoint_t *local_interface,
   char msg_control[CMSG_LEN(sizeof(struct sockaddr_storage))]; 
   struct msghdr mhdr;
   struct iovec iov[1];
-  struct coap_posix_endpoint_t *ep =
-    (struct coap_posix_endpoint_t *)local_interface;
+  struct coap_endpoint_t *ep = local_interface;
   coap_address_t local;
 #endif /* WITH_CONTIKI */
 
