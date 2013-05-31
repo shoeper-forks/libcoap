@@ -18,6 +18,9 @@
 /* Define to 1 if you have the `coap' library (-lcoap). */
 #undef HAVE_LIBCOAP
 
+/* Define to 1 if you have the `tinydtls' library (-ltinydtls). */
+#undef HAVE_LIBTINYDTLS
+
 /* Define to 1 if you have the <limits.h> header file. */
 #undef HAVE_LIMITS_H
 

@@ -34,6 +34,8 @@ AC_CHECK_LIB([coap], [coap_new_pdu])
 AC_SEARCH_LIBS([gethostbyname], [nsl])
 AC_SEARCH_LIBS([socket], [socket])
 
+AC_CHECK_LIB([tinydtls], [dtls_write])
+
 # configuration options that may change compile flags 
 AC_ARG_WITH(debug,
   [AS_HELP_STRING([--without-debug],[disable all debug output and assertions])],
@@ -68,11 +70,6 @@ AC_ARG_WITH(tests,
 AC_ARG_WITH(shared,
   [AS_HELP_STRING([--with-shared],[build shared library])],	
   [BUILD_SO="BUILD_SO=1"],
-  [])
-
-AC_ARG_WITH(tinydtls,
-  [AS_HELP_STRING([--with-tinydtls],[build support for tinyDTLS])],	
-  [CPPFLAGS="${CPPFLAGS} -DWITH_TINYDTLS"],
   [])
 
 # Checks for header files.
