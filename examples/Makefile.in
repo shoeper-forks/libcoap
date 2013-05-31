@@ -25,7 +25,7 @@ CFLAGS:=-g -Wall @CFLAGS@
 CPPFLAGS:=-I$(top_srcdir) @CPPFLAGS@
 DISTDIR?=$(top_builddir)/@PACKAGE_TARNAME@-@PACKAGE_VERSION@
 FILES:=Makefile.in $(SOURCES)
-LDFLAGS:=-L$(top_builddir)
+LDFLAGS:=-L$(top_builddir) @LDFLAGS@
 LDLIBS:=-lcoap @LIBS@
 libcoap =$(top_builddir)/libcoap.a
 
