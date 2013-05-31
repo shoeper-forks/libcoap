@@ -43,7 +43,7 @@
 #if HAVE_LIBTINYDTLS
 #define HAVE_STR
 #define WITH_SHA256
-#include <dtls.h>
+#include <tinydtls/dtls.h>
 #endif
 
 #if HAVE_LIBTINYDTLS
