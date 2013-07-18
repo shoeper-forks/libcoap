@@ -57,7 +57,15 @@ typedef struct small_context_t {
 #if HAVE_LIBTINYDTLS
   dtls_context_t *dtls_context;
 #endif
+  LIST_STRUCT(endpoints);
 } small_context_t;
+
+struct list_ep_t {
+  struct list_ep_t *next;
+  coap_endpoint_t *ep;
+};
+
+small_context_t context;
 
 int init_resource(coap_context_t *);
 void run(small_context_t *);
@@ -72,25 +80,60 @@ ssize_t send_to_peer(const coap_endpoint_t *local_interface,
 int
 dtls_application_data(struct dtls_context_t *ctx, 
 		      session_t *session, uint8 *data, size_t len) {
+  /* FIXME: set small_ctx from ctx->app_data */
+  small_context_t *small_ctx = &context;
 
-  /* FIXME: pass data to coap_handle_message */
-  return -1;
-  /* return coap_handle_message(ctx->coap_context,  */
-  /* 			     local, &remote, */
-  /* 			     (unsigned char *)data, len); */
+  struct list_ep_t *ep_item;
+  coap_endpoint_t *local_interface = NULL;
+
+  for (ep_item = list_head(small_ctx->endpoints); ep_item;
+       ep_item = list_item_next(ep_item)) {
+    if (session->ifindex == ep_item->ep->handle) {
+      local_interface = ep_item->ep;
+      break;
+    }
+  }
+
+  if (!local_interface) {
+    fprintf(stderr, "dtls_send_to_peer: cannot find local interface\n");
+    return -3;
+  }
+
+  return coap_handle_message(small_ctx->coap_context,
+  			     local_interface, 
+			     (coap_address_t *)session,
+  			     (unsigned char *)data, len);
 }
 
 int
 dtls_send_to_peer(struct dtls_context_t *ctx, 
 	     session_t *session, uint8 *data, size_t len) {
+  /* FIXME: set small_ctx from ctx->app_data */
+  small_context_t *small_ctx = &context;
+  struct list_ep_t *ep_item;
+  coap_endpoint_t *local_interface = NULL;
 
-  /* FIXME: call coap_network_send(local_interface, remote, data, len); */
-  return -1;
+  for (ep_item = list_head(small_ctx->endpoints); ep_item;
+       ep_item = list_item_next(ep_item)) {
+    if (session->ifindex == ep_item->ep->handle) {
+      local_interface = ep_item->ep;
+      break;
+    }
+  }
+
+  if (!local_interface) {
+    fprintf(stderr, "dtls_send_to_peer: cannot find local interface\n");
+    return -3;
+  }
+
+  /* get local interface from handle */
+  return coap_network_send(local_interface, (coap_address_t *)session, 
+			   data, len);
 }
 
 
 /* This function is the "key store" for tinyDTLS. It is called to
- * retrieve a key for the given identiy within this particular
+ * retrieve a key for the given identity within this particular
  * session. */
 int
 get_key(struct dtls_context_t *ctx, 
@@ -122,9 +165,9 @@ static dtls_handler_t cb = {
 /*---------------------------------------------------------------------------*/
 int
 main(int argc, char **argv) {
-  small_context_t context;
-
   coap_set_log_level(LOG_DEBUG);
+
+  LIST_STRUCT_INIT(&context, endpoints);
 
 #if HAVE_LIBTINYDTLS
   context.dtls_context = dtls_new_context(&context);
@@ -140,6 +183,11 @@ main(int argc, char **argv) {
     exit(EXIT_FAILURE);			/* error */
 
 #if HAVE_LIBTINYDTLS
+  /* set small_context as application data in dtls_context so we can
+   * use it in read callback to pass decrypted application data to
+   * libcoap. */
+  dtls_set_app_data(context.dtls_context, &context);
+
   /* register callback function to send data over secure channel */
   coap_set_cb(context.coap_context, send_to_peer, write);
 #endif
@@ -203,11 +251,36 @@ init_resource(coap_context_t *ctx) {
   return resource != NULL;
 }
 
+int
+is_secure(const coap_endpoint_t *src, const coap_address_t *dst) {
+  return 1;
+}
+
 ssize_t
 send_to_peer(const coap_endpoint_t *local_interface,
 	     const coap_address_t *remote, 
 	     unsigned char *data, size_t len) {
-  return coap_network_send(local_interface, remote, data, len);
+  int res = -2;
+
+  if (is_secure(local_interface, remote)) {
+#if HAVE_LIBTINYDTLS
+    session_t session;
+
+    /* create tinydtls session object from remote address and local
+     * endpoint handle */
+    dtls_session_init(&session);
+    session.size = remote->size;
+    session.addr.st = remote->addr.st;
+    session.ifindex = local_interface->handle;
+
+    res = dtls_write(context.dtls_context, &session, 
+		     (uint8 *)data, len);
+#endif /* HAVE_LIBTINYDTLS */
+  } else {
+    res = coap_network_send(local_interface, remote, data, len);
+  }
+
+  return res;
 }
 
 void
@@ -237,9 +310,22 @@ handle_read(small_context_t *ctx, coap_endpoint_t *local) {
     }
     
 #if HAVE_LIBTINYDTLS
-    dtls_handle_message(ctx->dtls_context, (session_t *)&local->addr,
-      (uint8 *)buf, bytes_read);
+    if (is_secure(local, &remote)) {
+      session_t session;
 
+      /* create tinydtls session object from remote address and local
+       * endpoint handle */
+      dtls_session_init(&session);
+      session.size = remote.size;
+      session.addr.st = remote.addr.st;
+      session.ifindex = local->handle;
+
+      dtls_handle_message(ctx->dtls_context, &session,
+			  (uint8 *)buf, bytes_read);
+    } else {
+      coap_handle_message(ctx->coap_context, local, &remote,
+			  buf, (size_t)bytes_read);
+    }
 #else
   coap_handle_message(ctx->coap_context, local, &remote,
     buf, (size_t)bytes_read);
@@ -258,6 +344,7 @@ run(small_context_t *ctx) {
 
   coap_address_t listen_addr;
   coap_endpoint_t *ep;
+  static struct list_ep_t ep_item;
 
   /* clears the entire structure */
   coap_address_init(&listen_addr);
@@ -271,6 +358,10 @@ run(small_context_t *ctx) {
   ep = coap_new_endpoint(&listen_addr);
   if (!ep)
     return;
+  
+  memset(&ep_item, 0, sizeof(ep_item));
+  ep_item.ep = ep;
+  list_add(context.endpoints, &ep_item);
   
   while(1) {
     FD_ZERO(&readfds);
