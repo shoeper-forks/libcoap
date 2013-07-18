@@ -44,7 +44,7 @@ void coap_free_endpoint(coap_endpoint_t *ep);
  * Function interface for data transmission. This function returns the number
  * of bytes that have been transmitted, or a value less than zero on error.
  *
- * @param ep      The local interface to send the data
+ * @param local_interface  The local interface to send the data
  * @param dst     The address of the receiver.
  * @param data    The data to send.
  * @param datalen The actual length of @p data.
