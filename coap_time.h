@@ -51,7 +51,7 @@ contiki_ticks_impl(coap_tick_t *t) {
 #else /* WITH_CONTIKI */
 typedef unsigned int coap_tick_t; 
 
-#define COAP_TICKS_PER_SECOND 1024
+#define COAP_TICKS_PER_SECOND 1000
 
 /** Set at startup to initialize the internal clock (time in seconds). */
 extern time_t clock_offset;

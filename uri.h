@@ -16,6 +16,7 @@
  * string with coap_split_uri() and can be used as input for
  * option-creation functions. */
 typedef struct {
+  str scheme;		        /**< URI scheme */
   str host;			/**< host part of the URI */
   unsigned short port;		/**< The port in host byte order */
   str path;			/**< Beginning of the first path segment. 

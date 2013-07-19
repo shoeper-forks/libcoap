@@ -23,6 +23,14 @@
 
 #include "coap.h"
 
+#if HAVE_LIBTINYDTLS
+#define HAVE_STR
+#define WITH_SHA256
+#include <tinydtls/dtls.h>
+
+dtls_context_t *dtls_context = NULL;
+#endif
+
 int flags = 0;
 
 static coap_endpoint_t *local_interface = NULL;
@@ -60,7 +68,15 @@ coap_tick_t max_wait;		/* global timeout (changed by set_timeout()) */
 unsigned int obs_seconds = 30;	/* default observe time */
 coap_tick_t obs_wait = 0;	/* timeout for current subscription */
 
+int use_dtls = 0;		/* Indicates whether secure
+				 * communication was requested by
+				 * stating a 'coaps' URI on the
+				 * command line. The has only an
+				 * effect with libtinydtls. */
+
+#ifndef min
 #define min(a,b) ((a) < (b) ? (a) : (b))
+#endif
 
 static inline void
 set_timeout(coap_tick_t *timer, const unsigned int seconds) {
@@ -230,6 +246,7 @@ resolve_address(const str *server, struct sockaddr *dst) {
     return error;
   }
 
+  memset(dst, 0, sizeof(struct sockaddr));
   for (ainfo = res; ainfo != NULL; ainfo = ainfo->ai_next) {
     switch (ainfo->ai_family) {
     case AF_INET6:
@@ -624,6 +641,25 @@ cmdline_content_type(char *arg, unsigned short key) {
   }
 }
 
+inline int
+is_default_port(const coap_uri_t *uri) {
+  assert(uri);
+
+  if (uri->port == COAP_DEFAULT_PORT) {
+    return uri->scheme.length == strlen(COAP_DEFAULT_SCHEME) && 
+      strncasecmp((const char *)uri->scheme.s, 
+		  COAP_DEFAULT_SCHEME, uri->scheme.length) == 0;
+  }
+
+  if (uri->port == COAPS_DEFAULT_PORT) {
+    return uri->scheme.length == strlen(COAPS_DEFAULT_SCHEME) && 
+      strncasecmp((const char *)uri->scheme.s, 
+		  COAPS_DEFAULT_SCHEME, uri->scheme.length) == 0;
+  }
+
+  return 0;
+}
+
 void
 cmdline_uri(char *arg) {
   unsigned char portbuf[2];
@@ -651,7 +687,7 @@ cmdline_uri(char *arg) {
   } else {			/* split arg into Uri-* options */
     coap_split_uri((unsigned char *)arg, strlen(arg), &uri );
 
-    if (uri.port != COAP_DEFAULT_PORT) {
+    if (!is_default_port(&uri)) {
       coap_insert( &optlist, 
 		   new_option_node(COAP_OPTION_URI_PORT,
 				   coap_encode_var_bytes(portbuf, uri.port),
@@ -688,6 +724,12 @@ cmdline_uri(char *arg) {
       }
     }
   }
+
+#if HAVE_LIBTINYDTLS
+  use_dtls = uri.scheme.length == sizeof(COAPS_DEFAULT_SCHEME) - 1 &&
+    strncasecmp((const char *)uri.scheme.s, 
+		COAPS_DEFAULT_SCHEME, uri.scheme.length) == 0;
+#endif /* HAVE_LIBTINYDTLS */
 }
 
 int
@@ -939,11 +981,174 @@ handle_read(coap_context_t *ctx, coap_endpoint_t *local) {
   bytes_read = coap_network_read(local, &remote, buf, sizeof(buf));
   
   if (bytes_read < 0) {
-    warn("coap_read: recvfrom");
+    warn("coap_read: recvfrom\n");
   } else {
+#if HAVE_LIBTINYDTLS
+    if (use_dtls) {
+    session_t session;
+
+    /* create tinydtls session object from remote address and local
+     * endpoint handle */
+    dtls_session_init(&session);
+    
+    session.size = remote.size;
+    session.ifindex = local->handle;
+    memcpy(&session.addr, &remote.addr, sizeof(remote.addr));
+        
+    dtls_handle_message(/* coap_get_app_data(ctx) */dtls_context, &session,
+			(uint8 *)buf, bytes_read);
+    } else {
+      coap_handle_message(ctx, local, &remote, buf, (size_t)bytes_read);
+    }
+#else /* HAVE_LIBTINYDTLS */
     coap_handle_message(ctx, local, &remote, buf, (size_t)bytes_read);
+#endif /* HAVE_LIBTINYDTLS */
   }
 }
+
+#if HAVE_LIBTINYDTLS
+/* This function is called from libcoap to send data on the given
+ * local interface to the remote peer. */
+ssize_t
+send_to_peer(const coap_endpoint_t *local_interface,
+	     const coap_address_t *remote, 
+	     unsigned char *data, size_t len) {
+  int res = -2;
+
+  if (use_dtls) {
+    session_t session;
+
+    /* create tinydtls session object from remote address and local
+     * endpoint handle */
+    dtls_session_init(&session);
+    session.size = remote->size;
+    session.ifindex = local_interface->handle;
+    memcpy(&session.addr, &remote->addr, sizeof(remote->addr));
+
+    res = dtls_write(dtls_context, &session, (uint8 *)data, len);
+  } else {
+    res = coap_network_send(local_interface, remote, data, len);
+  }
+
+  return res;
+}
+
+int
+dtls_application_data(struct dtls_context_t *ctx, 
+		      session_t *session, uint8 *data, size_t len) {
+  assert(local_interface);
+
+  return coap_handle_message(dtls_get_app_data(ctx),
+  			     local_interface, 
+			     (coap_address_t *)session,
+  			     (unsigned char *)data, len);
+}
+
+int
+dtls_send_to_peer(struct dtls_context_t *ctx, 
+	     session_t *session, uint8 *data, size_t len) {
+  assert(local_interface);
+
+  return coap_network_send(local_interface, (coap_address_t *)session, 
+			   data, len);
+}
+
+
+/* This function is the "key store" for tinyDTLS. It is called to
+ * retrieve a key for the given identity within this particular
+ * session. */
+int
+get_key(struct dtls_context_t *ctx, 
+	const session_t *session, 
+	const unsigned char *id, size_t id_len, 
+	const dtls_key_t **result) {
+
+  static const dtls_key_t psk = {
+    .type = DTLS_KEY_PSK,
+    .key.psk.id = (unsigned char *)"Client_identity", 
+    .key.psk.id_length = 15,
+    .key.psk.key = (unsigned char *)"secretPSK", 
+    .key.psk.key_length = 9
+  };
+   
+  *result = &psk;
+  return 0;
+}
+
+static inline void
+timeval_from_ticks(coap_tick_t ticks, struct timeval *tv) {
+  tv->tv_usec = (ticks % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
+  tv->tv_sec = ticks / COAP_TICKS_PER_SECOND;
+}
+
+int
+connect_remote(dtls_context_t *ctx, const coap_address_t *remote,
+	       coap_tick_t max_wait) {
+  dtls_peer_t *peer;
+  session_t session;
+  int res;
+  coap_tick_t now, next;
+  fd_set readfds;
+  struct timeval tv;
+
+  /* create tinydtls session object from remote address and local
+   * endpoint handle */
+  dtls_session_init(&session);
+  session.size = remote->size;
+  session.ifindex = local_interface->handle;
+  memcpy(&session.addr, &remote->addr, sizeof(remote->addr));
+
+  peer = dtls_new_peer(&session);
+  if (!peer)
+    return -1;
+
+  res = dtls_connect_peer(dtls_context, peer);
+  if (res < 0)
+    return res;
+
+  coap_ticks(&now);
+  max_wait += now;
+  while (!dtls_peer_is_connected(peer)) {
+    FD_ZERO(&readfds);
+    FD_SET(local_interface->handle, &readfds );
+
+    dtls_check_retransmit(ctx, &next);
+    if (next && next < max_wait) {
+      timeval_from_ticks(next - now, &tv);
+    } else {
+      timeval_from_ticks(max_wait - now, &tv);
+    }
+    
+    res = select(local_interface->handle + 1, &readfds, 0, 0, &tv);
+
+    if (res < 0) {		/* error */
+      perror("select");
+    } else if (res > 0) {	/* read from socket */
+      if (FD_ISSET(local_interface->handle, &readfds)) {
+	/* read received data */
+	handle_read(dtls_get_app_data(ctx), local_interface);
+      }
+    } else { /* timeout */
+      coap_ticks(&now);
+      if (max_wait <= now) {
+	info("timeout\n");
+	return -2;
+      } 
+    }
+  }
+  printf("done\n");
+
+  return 0;
+}
+
+static dtls_handler_t cb = {
+  .write = dtls_send_to_peer,
+  .read  = dtls_application_data,
+  .event = NULL,
+  .get_key = get_key
+};
+
+#endif /* HAVE_LIBTINYDTLS */
 
 int
 main(int argc, char **argv) {
@@ -1054,6 +1259,7 @@ main(int argc, char **argv) {
   }
 
   /* resolve destination address where server should be sent */
+  coap_address_init(&dst);
   res = resolve_address(&server, &dst.addr.sa);
 
   if (res < 0) {
@@ -1095,6 +1301,39 @@ main(int argc, char **argv) {
   if (group)
     join(ctx, group);
 
+  set_timeout(&max_wait, wait_seconds);
+  debug("timeout is set to %d seconds\n", wait_seconds);
+
+  if (use_dtls) {
+#if HAVE_LIBTINYDTLS
+    dtls_init();
+    dtls_set_log_level(log_level);
+
+    dtls_context = dtls_new_context(ctx);
+    if (!dtls_context) {
+      coap_log(LOG_EMERG, "cannot create DTLS context\n");
+      exit(EXIT_FAILURE);			/* error */
+    }
+
+    /* register coap_context as dtls app data and dtls_context as coap
+     * app data */
+    coap_set_app_data(ctx, dtls_context);
+    dtls_set_app_data(dtls_context, ctx);
+
+    /* register callbacks for network I/O */
+    dtls_set_handler(dtls_context, &cb);
+    coap_set_cb(ctx, send_to_peer, write);
+
+    /* establish DTLS connection with remote peer first */
+    if (connect_remote(dtls_context, &dst, max_wait) < 0) {
+      coap_log(LOG_EMERG, "cannot establish DTLS channel\n");
+      exit(EXIT_FAILURE);			/* error */
+    }
+#else /* HAVE_LIBTINYDTLS */
+    coap_log(LOG_WARN, PACKAGE_NAME " was built without DTLS support\n");
+#endif /* HAVE_LIBTINYDTLS */
+  }
+
   /* construct CoAP message */
 
   if (!proxy.length && addrptr
@@ -1129,9 +1368,6 @@ main(int argc, char **argv) {
 
   if (pdu->hdr->type != COAP_MESSAGE_CON || tid == COAP_INVALID_TID)
     coap_delete_pdu(pdu);
-
-  set_timeout(&max_wait, wait_seconds);
-  debug("timeout is set to %d seconds\n", wait_seconds);
 
   while ( !(ready && coap_can_exit(ctx)) ) {
     FD_ZERO(&readfds);

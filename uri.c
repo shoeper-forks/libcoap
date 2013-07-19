@@ -60,6 +60,7 @@ coap_split_uri(unsigned char *str_var, size_t len, coap_uri_t *uri) {
   }
 
   q = (unsigned char *)COAP_DEFAULT_SCHEME;
+  uri->scheme.s = p;
   while (len && *q && tolower(*p) == *q) {
     ++p; ++q; --len;
   }
@@ -67,14 +68,20 @@ coap_split_uri(unsigned char *str_var, size_t len, coap_uri_t *uri) {
   /* If q does not point to the string end marker '\0', the schema
    * identifier is wrong. */
   if (*q) {
+    uri->scheme.s = NULL;
     res = -1;
     goto error;
   }
-
+    
   /* There might be an additional 's', indicating the secure version: */
   if (len && (secure = tolower(*p) == 's')) {
     ++p; --len;
   }
+  uri->scheme.length = p - uri->scheme.s;
+
+  /* set default port to COAPS_DEFAULT_PORT if scheme is 'coaps' */
+  if (secure)
+    uri->port = COAPS_DEFAULT_PORT;
 
   q = (unsigned char *)"://";
   while (len && *q && tolower(*p) == *q) {

@@ -250,6 +250,8 @@ coap_network_send(const coap_endpoint_t *local_interface,
 
 #ifndef CUSTOM_COAP_NETWORK_READ
 
+#define SIN6(A) ((struct sockaddr_in6 *)(A))
+
 ssize_t
 coap_network_read(coap_endpoint_t *local_interface,
 		  coap_address_t *remote, 
@@ -321,7 +323,9 @@ coap_network_read(coap_endpoint_t *local_interface,
 	       &u.p->ipi6_addr, sizeof(struct in6_addr));
 
 	remote->size = mhdr.msg_namelen;
-	memcpy(&remote->addr.st, mhdr.msg_name, remote->size);
+	remote->addr.sin6.sin6_family = SIN6(mhdr.msg_name)->sin6_family;
+	remote->addr.sin6.sin6_addr = SIN6(mhdr.msg_name)->sin6_addr;
+	remote->addr.sin6.sin6_port = SIN6(mhdr.msg_name)->sin6_port;
 
 	break;
       }
@@ -373,5 +377,7 @@ coap_network_read(coap_endpoint_t *local_interface,
 
   return len;
 }
+
+#undef SIN6
 
 #endif /*  CUSTOM_COAP_NETWORK_READ */

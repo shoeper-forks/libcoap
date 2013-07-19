@@ -133,6 +133,8 @@ typedef struct coap_context_t {
   ssize_t (*cb_write)(const coap_endpoint_t *local_interface,
 		      const coap_address_t *remote, 
 		      unsigned char *data, size_t len);
+
+  void *app;			/**< application-specific data */
 } coap_context_t;
 
 /** 
@@ -140,6 +142,9 @@ typedef struct coap_context_t {
  * set. Currently, only the write callback can be modified.
  */
 #define coap_set_cb(ctx,cb,CB) do { (ctx)->cb_##CB = cb; } while(0)
+
+#define coap_set_app_data(CTX,DATA) ((CTX)->app = (DATA))
+#define coap_get_app_data(CTX) ((CTX)->app)
 
 /**
  * Registers a new message handler that is called whenever a response
@@ -230,7 +235,6 @@ coap_new_message_id(coap_context_t *context) {
  * 
  */
 void coap_free_context(coap_context_t *context);
-
 
 /**
  * Sends a confirmed CoAP message to given destination. The memory
