@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <ctype.h>
+#include <sys/fcntl.h>
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -472,12 +473,24 @@ usage( const char *program, const char *version) {
 	   "\t-P addr[:port]\tuse proxy (automatically adds Proxy-Uri option to\n"
 	   "\t\t\trequest)\n"
 	   "\t-T token\tinclude specified token\n"
+#if HAVE_LIBTINYDTLS
+	   "\nThis program was built with DTLS support and thus provides two\n"
+	   "additional options:\n\n"
+	   "\t-i file\t\tsecure identity\n"
+	   "\t-k file\t\tsecret key\n"
+	   "\nThese options currently are used with the pre-shared key ciphersuites\n"
+	   "supported by tinydtls. As the PSK identity and the pre-shared key\n"
+	   "usually contain binary data, the input must be a file.\n"
+#endif
 	   "\n"
 	   "examples:\n"
 	   "\tcoap-client -m get coap://[::1]/\n"
 	   "\tcoap-client -m get coap://[::1]/.well-known/core\n"
 	   "\tcoap-client -m get -T cafe coap://[::1]/time\n"
 	   "\techo 1000 | coap-client -m put -T cafe coap://[::1]/time -f -\n"
+#if HAVE_LIBTINYDTLS
+	   "\tcoap-client -i identity.txt -k key.txt coaps://example.com/auth?node123\n"
+#endif
 	   ,program, version, program, wait_seconds);
 }
 
@@ -1053,6 +1066,19 @@ dtls_send_to_peer(struct dtls_context_t *ctx,
 			   data, len);
 }
 
+/* The PSK information for DTLS */
+#define PSK_ID_MAXLEN 256
+#define PSK_MAXLEN 256
+static unsigned char psk_id[PSK_ID_MAXLEN];
+static unsigned char psk_key[PSK_MAXLEN];
+
+static dtls_key_t psk = {
+  .type = DTLS_KEY_PSK,
+  .key.psk.id = psk_id, 
+  .key.psk.id_length = 0,
+  .key.psk.key = psk_key, 
+  .key.psk.key_length = 0
+};
 
 /* This function is the "key store" for tinyDTLS. It is called to
  * retrieve a key for the given identity within this particular
@@ -1063,14 +1089,6 @@ get_key(struct dtls_context_t *ctx,
 	const unsigned char *id, size_t id_len, 
 	const dtls_key_t **result) {
 
-  static const dtls_key_t psk = {
-    .type = DTLS_KEY_PSK,
-    .key.psk.id = (unsigned char *)"Client_identity", 
-    .key.psk.id_length = 15,
-    .key.psk.key = (unsigned char *)"secretPSK", 
-    .key.psk.key_length = 9
-  };
-   
   *result = &psk;
   return 0;
 }
@@ -1141,6 +1159,20 @@ connect_remote(dtls_context_t *ctx, const coap_address_t *remote,
   return 0;
 }
 
+void
+close_remote(dtls_context_t *ctx, const coap_address_t *remote) {
+  session_t session;
+
+  /* create tinydtls session object from remote address and local
+   * endpoint handle */
+  dtls_session_init(&session);
+  session.size = remote->size;
+  session.ifindex = local_interface->handle;
+  memcpy(&session.addr, &remote->addr, sizeof(remote->addr));
+
+  dtls_close(ctx, &session);
+}
+
 static dtls_handler_t cb = {
   .write = dtls_send_to_peer,
   .read  = dtls_application_data,
@@ -1148,6 +1180,24 @@ static dtls_handler_t cb = {
   .get_key = get_key
 };
 
+ssize_t
+read_from_file(char *arg, unsigned char *buf, size_t max_buf_len) {
+  int fd;
+  ssize_t result, bytes_read = 0;
+
+  fd = open(arg, O_RDONLY);
+  if (fd < 0)
+    return -1;
+  
+  while ((result = read(fd, buf, max_buf_len)) > 0) {
+    buf += result;
+    bytes_read += result;
+    max_buf_len -= result;
+  }
+
+  close(fd);
+  return result == 0? bytes_read : -1;
+}
 #endif /* HAVE_LIBTINYDTLS */
 
 int
@@ -1170,7 +1220,15 @@ main(int argc, char **argv) {
   coap_log_t log_level = LOG_WARN;
   coap_tid_t tid = COAP_INVALID_TID;
 
-  while ((opt = getopt(argc, argv, "Nb:e:f:g:m:p:s:t:o:v:A:B:O:P:T:")) != -1) {
+#if HAVE_LIBTINYDTLS
+/* define options -i and -k when tinydtls support is built in */
+# define OPTSTR "Nb:e:f:g:i:k:m:p:s:t:o:v:A:B:O:P:T:"
+#else /* HAVE_LIBTINYDTLS */
+/* options -i and -k are not available */
+# define OPTSTR "Nb:e:f:g:m:p:s:t:o:v:A:B:O:P:T:"
+#endif /* HAVE_LIBTINYDTLS */
+
+  while ((opt = getopt(argc, argv, OPTSTR)) != -1) {
     switch (opt) {
     case 'b' :
       cmdline_blocksize(optarg);
@@ -1189,6 +1247,26 @@ main(int argc, char **argv) {
     case 'g' :
       group = optarg;
       break;
+#if HAVE_LIBTINYDTLS
+    case 'i' : {
+      ssize_t result = read_from_file(optarg, psk.key.psk.id, PSK_ID_MAXLEN);
+      if (result < 0) {
+	warn("cannot read PSK identity\n");
+      } else {
+	psk.key.psk.id_length = result;
+      }
+      break;
+    }
+    case 'k' : {
+      ssize_t result = read_from_file(optarg, psk.key.psk.key, PSK_MAXLEN);
+      if (result < 0) {
+	warn("cannot read PSK\n");
+      } else {
+	psk.key.psk.key_length = result;
+      }
+      break;
+    }
+#endif /* HAVE_LIBTINYDTLS */
     case 'p' :
       strncpy(port_str, optarg, NI_MAXSERV-1);
       port_str[NI_MAXSERV - 1] = '\0';
@@ -1420,6 +1498,13 @@ main(int argc, char **argv) {
       } 
     }
   }
+
+#if HAVE_LIBTINYDTLS
+  if (use_dtls) {
+    /* send close alert to remote peer */
+    close_remote(dtls_context, &dst);
+  }
+#endif /* HAVE_LIBTINYDTLS */
 
   close_output();
 

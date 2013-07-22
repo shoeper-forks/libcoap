@@ -1,3 +1,7 @@
+2013-07-22  Olaf Bergmann  <bergmann@tzi.org>
+
+	* examples/client.c (main): Added support for DTLS (using tinydtls).
+
 2013-05-21  Olaf Bergmann  <bergmann@tzi.org>
 
 	* net.c: Changed various functions to pass the local interface
