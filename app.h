@@ -85,4 +85,12 @@ void coap_application_detach(coap_application_t *application,
  */
 coap_err_t coap_application_run(coap_application_t *application);
 
+/**
+ * Sends given @p pdu on @p local_interface to @p dst.
+ */
+ssize_t coap_application_sendmsg(coap_application_t *application,
+				 coap_endpoint_t *local_interface,
+				 coap_address_t *dst, coap_pdu_t *pdu, 
+				 int flags);
+
 #endif /* _COAP_APP_H_ */
