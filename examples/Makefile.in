@@ -17,8 +17,8 @@ abs_builddir = @abs_builddir@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 # files and flags
-PROGRAMS:=coap-server coap-client small #rd etsi_iot_01 #tiny
-SOURCES:= tiny.c client.c server.c rd.c etsi_iot_01.c small.c
+PROGRAMS:=coap-server coap-client small hello-world #rd etsi_iot_01 #tiny
+SOURCES:= tiny.c client.c server.c rd.c etsi_iot_01.c small.c hello-world.c
 OBJECTS:= $(patsubst %.c, %.o, $(SOURCES))
 #CFLAGS:=-g -Wall -ansi -pedantic -I..
 CFLAGS:=-g -Wall @CFLAGS@
