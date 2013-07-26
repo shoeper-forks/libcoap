@@ -961,7 +961,7 @@ get_context(const char *node, const char *port) {
       addr.size = rp->ai_addrlen;
       memcpy(&addr.addr, rp->ai_addr, rp->ai_addrlen);
 
-      local_interface = coap_new_endpoint(&addr);
+      local_interface = coap_new_endpoint(&addr, 0);
       if (!local_interface)
 	continue;
 
@@ -1023,7 +1023,8 @@ handle_read(coap_context_t *ctx, coap_endpoint_t *local) {
 /* This function is called from libcoap to send data on the given
  * local interface to the remote peer. */
 ssize_t
-send_to_peer(const coap_endpoint_t *local_interface,
+send_to_peer(struct coap_context_t *context,
+	     const coap_endpoint_t *local_interface,
 	     const coap_address_t *remote, 
 	     unsigned char *data, size_t len) {
   int res = -2;
@@ -1040,7 +1041,7 @@ send_to_peer(const coap_endpoint_t *local_interface,
 
     res = dtls_write(dtls_context, &session, (uint8 *)data, len);
   } else {
-    res = coap_network_send(local_interface, remote, data, len);
+    res = coap_network_send(context, local_interface, remote, data, len);
   }
 
   return res;
@@ -1062,7 +1063,8 @@ dtls_send_to_peer(struct dtls_context_t *ctx,
 	     session_t *session, uint8 *data, size_t len) {
   assert(local_interface);
 
-  return coap_network_send(local_interface, (coap_address_t *)session, 
+  return coap_network_send(dtls_get_app_data(ctx),
+			   local_interface, (coap_address_t *)session, 
 			   data, len);
 }
 

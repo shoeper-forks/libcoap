@@ -73,7 +73,8 @@ void run(small_context_t *);
 #if HAVE_LIBTINYDTLS
 /* This function is called from libcoap to send data on the given
  * local interface to the remote peer. */
-ssize_t send_to_peer(const coap_endpoint_t *local_interface,
+ssize_t send_to_peer(struct coap_context_t *context,
+		     const coap_endpoint_t *local_interface,
 		     const coap_address_t *remote, 
 		     unsigned char *data, size_t len);
 
@@ -127,7 +128,8 @@ dtls_send_to_peer(struct dtls_context_t *ctx,
   }
 
   /* get local interface from handle */
-  return coap_network_send(local_interface, (coap_address_t *)session, 
+  return coap_network_send(dtls_get_app_data(ctx),
+			   local_interface, (coap_address_t *)session, 
 			   data, len);
 }
 
@@ -257,7 +259,8 @@ is_secure(const coap_endpoint_t *src, const coap_address_t *dst) {
 }
 
 ssize_t
-send_to_peer(const coap_endpoint_t *local_interface,
+send_to_peer(struct coap_context_t *ctx,
+	     const coap_endpoint_t *local_interface,
 	     const coap_address_t *remote, 
 	     unsigned char *data, size_t len) {
   int res = -2;
@@ -277,7 +280,7 @@ send_to_peer(const coap_endpoint_t *local_interface,
 		     (uint8 *)data, len);
 #endif /* HAVE_LIBTINYDTLS */
   } else {
-    res = coap_network_send(local_interface, remote, data, len);
+    res = coap_network_send(ctx, local_interface, remote, data, len);
   }
 
   return res;
@@ -355,7 +358,7 @@ run(small_context_t *ctx) {
   listen_addr.addr.sin6.sin6_port = htons(MY_COAP_PORT);
   listen_addr.addr.sin6.sin6_addr = in6addr_any;
 
-  ep = coap_new_endpoint(&listen_addr);
+  ep = coap_new_endpoint(&listen_addr, 0);
   if (!ep)
     return;
   

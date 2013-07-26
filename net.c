@@ -384,7 +384,7 @@ coap_send_impl(coap_context_t *context,
   if (!context || !dst || !pdu || !context->cb_write)
     return id;
 
-  bytes_written = context->cb_write(local_interface, dst,
+  bytes_written = context->cb_write(context, local_interface, dst,
 				    (unsigned char *)pdu->hdr, pdu->length);
 
   if (bytes_written >= 0) {
@@ -613,7 +613,7 @@ coap_handle_message(coap_context_t *ctx,
   memcpy(&node->remote, remote, sizeof(coap_address_t));
 
 if (!coap_pdu_parse(msg, msg_len, node->pdu)) {
-    warn("discard malformed PDU");
+    warn("discard malformed PDU\n");
     goto error;
   }
 

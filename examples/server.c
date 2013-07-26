@@ -335,7 +335,7 @@ get_context(const char *node, const char *port) {
       addr.size = rp->ai_addrlen;
       memcpy(&addr.addr, rp->ai_addr, rp->ai_addrlen);
 
-      local_interface = coap_new_endpoint(&addr);
+      local_interface = coap_new_endpoint(&addr, 0);
       if (!local_interface)
 	continue;
 

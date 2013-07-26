@@ -130,7 +130,8 @@ typedef struct coap_context_t {
    * Callback function for sending data. cb_write is set by
    * coap_set_cb() with @c write as its third argument.
    */
-  ssize_t (*cb_write)(const coap_endpoint_t *local_interface,
+  ssize_t (*cb_write)(struct coap_context_t *context,
+		      const coap_endpoint_t *local_interface,
 		      const coap_address_t *remote, 
 		      unsigned char *data, size_t len);
 

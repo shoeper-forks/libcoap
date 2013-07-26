@@ -57,7 +57,7 @@ coap_free_contiki_endpoint(coap_endpoint_t *ep) {
 }
 
 coap_endpoint_t *
-coap_new_endpoint(const coap_address_t *addr) {
+coap_new_endpoint(const coap_address_t *addr, int flags) {
   static initialized = 0;
   struct coap_contiki_endpoint_t ep;
 
@@ -92,7 +92,7 @@ coap_free_posix_endpoint(struct coap_endpoint_t *ep) {
 }
 
 coap_endpoint_t *
-coap_new_endpoint(const coap_address_t *addr) {
+coap_new_endpoint(const coap_address_t *addr, int flags) {
   int sockfd = socket(addr->addr.sa.sa_family, SOCK_DGRAM, 0);
   int on = 1;
   struct coap_endpoint_t *ep;
@@ -106,14 +106,24 @@ coap_new_endpoint(const coap_address_t *addr) {
     coap_log(LOG_WARN, "coap_new_endpoint: setsockopt SO_REUSEADDR");
 
   on = 1;
+  switch(addr->addr.sa.sa_family) {
+  case AF_INET:
+    if (setsockopt(sockfd, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on)) < 0)
+      coap_log(LOG_ALERT, "coap_new_endpoint: setsockopt IP_PKTINFO\n");
+    break;
+  case AF_INET6:
 #ifdef IPV6_RECVPKTINFO
   if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_RECVPKTINFO, &on, sizeof(on)) < 0)
     coap_log(LOG_ALERT, "coap_new_endpoint: setsockopt IPV6_RECVPKTINFO\n");
 #else /* IPV6_RECVPKTINFO */
   if (setsockopt(sockfd, IPPROTO_IPV6, IPV6_PKTINFO, &on, sizeof(on)) < 0)
     coap_log(LOG_ALERT, "coap_new_endpoint: setsockopt IPV6_PKTINFO\n");
-#endif /* IPV6_RECVPKTINFO */
-      
+#endif /* IPV6_RECVPKTINFO */      
+  break;
+  default:
+    coap_log(LOG_ALERT, "coap_new_endpoint: unsupported sa_family\n");
+  }
+
   if (bind(sockfd, &addr->addr.sa, addr->size) < 0) {
     coap_log(LOG_WARN, "coap_new_endpoint: bind");
     close (sockfd);
@@ -129,8 +139,24 @@ coap_new_endpoint(const coap_address_t *addr) {
 
   memset(ep, 0, sizeof(struct coap_endpoint_t));
   ep->handle = sockfd;
+  ep->flags = flags;
   memcpy(&ep->addr, addr, sizeof(coap_address_t));
-  
+
+#ifndef NDEBUG
+  if (LOG_DEBUG <= coap_get_log_level()) {
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 40
+#endif
+    unsigned char addr_str[INET6_ADDRSTRLEN+8];
+
+    if (coap_print_addr(addr, addr_str, INET6_ADDRSTRLEN+8)) {
+      debug("created %sendpoint %s\n", 
+	    ep->flags & COAP_ENDPOINT_DTLS ? "DTLS " : "",
+	    addr_str);
+    }
+  }
+#endif /* NDEBUG */
+
   return (coap_endpoint_t *)ep;
 }
 
@@ -162,8 +188,15 @@ struct in_pktinfo {
   struct in_addr ipi_addr;
 };
 
+#ifdef __GNUC__
+#define UNUSED_PARAM __attribute__ ((unused))
+#else /* not a GCC */
+#define UNUSED_PARAM
+#endif /* GCC */
+
 ssize_t
-coap_network_send(const coap_endpoint_t *local_interface,
+coap_network_send(struct coap_context_t *context UNUSED_PARAM,
+		  const coap_endpoint_t *local_interface,
 		  const coap_address_t *dst,
 		  unsigned char *data,
 		  size_t datalen) {
