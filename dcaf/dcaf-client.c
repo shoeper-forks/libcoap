@@ -19,7 +19,12 @@
 #include "coap.h"
 
 #if HAVE_LIBTINYDTLS
-char DEFAULT_AS_URI[] = "coaps://localhost:7770/auth";
+typedef struct dcaf_context_t {
+  coap_uri_t ap_uri;		/**< URI of our authentication proxy */
+  coap_uri_t rs_uri;		/**< the RS to talk to */
+} dcaf_context_t;
+
+char DEFAULT_AP_URI[] = "coaps://localhost:7770/auth";
 
 #define COAP_APPLICATION_SEND_SECURE 0x01
 
@@ -84,13 +89,13 @@ create_request(coap_application_t *application, unsigned char type,
 int
 authorization_request(coap_application_t *application,
 		      coap_endpoint_t *local_interface,
-		      coap_uri_t *as_uri) {
+		      coap_uri_t *ap_uri) {
   coap_address_t dst;
   coap_pdu_t *pdu;
 
-  /* retrieve destination address from as_uri */
-  if (!coap_address_resolve(as_uri->host.s, as_uri->host.length,
-			    as_uri->port, &dst)) {
+  /* retrieve destination address from ap_uri */
+  if (!coap_address_resolve(ap_uri->host.s, ap_uri->host.length,
+			    ap_uri->port, &dst)) {
     debug("cannot resolve address\n");
     return 0;
   }
@@ -109,7 +114,7 @@ authorization_request(coap_application_t *application,
 #endif
   /* create request PDU */
   pdu = create_request(application, COAP_MESSAGE_CON, 
-		       COAP_REQUEST_POST, as_uri, 0, NULL);
+		       COAP_REQUEST_POST, ap_uri, 0, NULL);
   if (!pdu) {
     coap_log(LOG_CRIT, "cannot create Authorization request\n");
     return 0;
@@ -122,13 +127,72 @@ authorization_request(coap_application_t *application,
     >= 0;
 }
 
+void
+message_handler(struct coap_context_t  *ctx, 
+		const coap_endpoint_t *local_interface, 
+		const coap_address_t *remote, 
+		coap_pdu_t *sent,
+		coap_pdu_t *received,
+		const coap_tid_t id) {
+  coap_application_t *application;
+  dcaf_context_t *dcaf_context; 
+  coap_address_t dst;
+  coap_pdu_t *pdu;
+
+  /* we are only interested in 2.05 responses for now
+   * TODO: check if token matches our request
+   */
+  if (received->hdr->code != COAP_RESPONSE_CODE(205))
+    return;
+
+  application = coap_get_app_data(ctx);
+  assert(application);
+
+  dcaf_context = coap_application_get_app_data(application);
+  assert(dcaf_context);
+
+  /* FIXME: register credentials from received response */
+
+  /* retrieve destination address from rs_uri */
+  if (!coap_address_resolve(dcaf_context->rs_uri.host.s, 
+			    dcaf_context->rs_uri.host.length,
+			    dcaf_context->rs_uri.port, &dst)) {
+    debug("cannot resolve address\n");
+  }
+
+#ifndef NDEBUG
+  if (LOG_DEBUG <= coap_get_log_level()) {
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 40
+#endif
+    unsigned char addr[INET6_ADDRSTRLEN+8];
+    
+    if (coap_print_addr(&dst, addr, INET6_ADDRSTRLEN+8)) {
+      debug("address resolved to: %s \n", addr); 
+    }
+  }
+#endif
+
+  pdu = create_request(application, COAP_MESSAGE_CON, 
+		       COAP_REQUEST_GET, &dcaf_context->rs_uri, 0, NULL);
+
+  if (!pdu) {
+    coap_log(LOG_ALERT, "cannot create PDU for RS\n");
+    return;
+  }
+    
+  /* send message */
+  coap_application_sendmsg(application, (coap_endpoint_t *)local_interface, 
+			   &dst, pdu, COAP_APPLICATION_SEND_SECURE);
+}
+
 int
 main(int argc, char **argv) {
   coap_application_t *app;
   coap_endpoint_t *nosec_interface, *dtls_interface;
   coap_address_t listen_addr;
   coap_log_t log_level = LOG_WARN;
-  coap_uri_t as_uri, rs_uri;
+  dcaf_context_t dcaf_context;
   int result = EXIT_FAILURE;
   int opt;
 
@@ -150,7 +214,7 @@ main(int argc, char **argv) {
   /* read as and rs uri */
   if (optind < argc) {
     coap_split_uri((unsigned char *)(argv[optind]), strlen(argv[optind]), 
-		   &rs_uri);
+		   &dcaf_context.rs_uri);
     optind++;
   } else {
     usage(argv[0], PACKAGE_VERSION);
@@ -159,16 +223,22 @@ main(int argc, char **argv) {
 
   if (optind < argc) {
     coap_split_uri((unsigned char *)(argv[optind]), strlen(argv[optind]), 
-		   &as_uri);
+		   &dcaf_context.ap_uri);
   } else {
     /* use default AS uri */
-    coap_split_uri((unsigned char *)DEFAULT_AS_URI, strlen(DEFAULT_AS_URI), 
-		   &as_uri);
+    coap_split_uri((unsigned char *)DEFAULT_AP_URI, strlen(DEFAULT_AP_URI), 
+		   &dcaf_context.ap_uri);
   }
 
   app = coap_new_application();
 
   if (app) {
+    /* we can use dcaf_context here as the command line arguments and
+     * local variables live longer than app itself. */
+    coap_application_set_app_data(app, &dcaf_context);
+
+    coap_register_response_handler(app->coap_context, message_handler);
+
     /* bind interfaces */
 
     /* clears the entire structure */
@@ -202,7 +272,7 @@ main(int argc, char **argv) {
       goto cleanup;
     }
 
-    if (!authorization_request(app, dtls_interface, &as_uri)) {
+    if (!authorization_request(app, dtls_interface, &dcaf_context.ap_uri)) {
       coap_log(LOG_CRIT, "sending authorization request failed\n");
       goto cleanup;
     }
@@ -226,9 +296,9 @@ usage(const char *program, const char *version) {
 
   fprintf( stderr, "%s v%s -- DCAF protocol client\n"
 	   "(c) 2013 Olaf Bergmann <bergmann@tzi.org>\n\n"
-	   "usage: %s [-h] [-v num] URI [AS]\n\n"
+	   "usage: %s [-h] [-v num] URI [AP]\n\n"
 	   "\tURI must be an absolute coaps URI of the requested resource,\n"
-	   "\tAS is the absolute URI of your authorization server,\n"
+	   "\tAP is the absolute URI of your authorization proxy,\n"
 	   "\t-h \t\tdisplay this help screen\n"
 	   "\t-v num\t\tverbosity level (default: 3)\n"
 	   "\n"
