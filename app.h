@@ -32,6 +32,7 @@ typedef struct coap_application_t {
   dtls_context_t *dtls_context;
 #endif
   LIST_STRUCT(endpoints);
+  void *app;			/**< application-specific data */
 } coap_application_t;
 
 typedef int coap_err_t;
@@ -52,6 +53,9 @@ coap_application_t *coap_new_application();
  * @param application The application object to delete.
  */
 void coap_free_application(coap_application_t *application);
+
+#define coap_application_set_app_data(APP,DATA) ((APP)->app = (DATA))
+#define coap_application_get_app_data(APP) ((APP)->app)
 
 /**
  * Attaches the specified endpoint object to application. This
