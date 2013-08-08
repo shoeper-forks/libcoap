@@ -1074,22 +1074,21 @@ dtls_send_to_peer(struct dtls_context_t *ctx,
 static unsigned char psk_id[PSK_ID_MAXLEN];
 static unsigned char psk_key[PSK_MAXLEN];
 
-static dtls_key_t psk = {
-  .type = DTLS_KEY_PSK,
-  .key.psk.id = psk_id, 
-  .key.psk.id_length = 0,
-  .key.psk.key = psk_key, 
-  .key.psk.key_length = 0
+static dtls_psk_key_t psk = {
+  .id = psk_id, 
+  .id_length = 0,
+  .key = psk_key, 
+  .key_length = 0
 };
 
 /* This function is the "key store" for tinyDTLS. It is called to
  * retrieve a key for the given identity within this particular
  * session. */
 int
-get_key(struct dtls_context_t *ctx, 
-	const session_t *session, 
-	const unsigned char *id, size_t id_len, 
-	const dtls_key_t **result) {
+get_psk_key(struct dtls_context_t *ctx, 
+	    const session_t *session, 
+	    const unsigned char *id, size_t id_len, 
+	    const dtls_psk_key_t **result) {
 
   *result = &psk;
   return 0;
@@ -1179,7 +1178,9 @@ static dtls_handler_t cb = {
   .write = dtls_send_to_peer,
   .read  = dtls_application_data,
   .event = NULL,
-  .get_key = get_key
+  .get_psk_key = get_psk_key,
+  .get_ecdsa_key = NULL,
+  .verify_ecdsa_key = NULL
 };
 
 ssize_t
@@ -1251,20 +1252,20 @@ main(int argc, char **argv) {
       break;
 #if HAVE_LIBTINYDTLS
     case 'i' : {
-      ssize_t result = read_from_file(optarg, psk.key.psk.id, PSK_ID_MAXLEN);
+      ssize_t result = read_from_file(optarg, psk.id, PSK_ID_MAXLEN);
       if (result < 0) {
 	warn("cannot read PSK identity\n");
       } else {
-	psk.key.psk.id_length = result;
+	psk.id_length = result;
       }
       break;
     }
     case 'k' : {
-      ssize_t result = read_from_file(optarg, psk.key.psk.key, PSK_MAXLEN);
+      ssize_t result = read_from_file(optarg, psk.key, PSK_MAXLEN);
       if (result < 0) {
 	warn("cannot read PSK\n");
       } else {
-	psk.key.psk.key_length = result;
+	psk.key_length = result;
       }
       break;
     }
