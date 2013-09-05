@@ -32,6 +32,7 @@ typedef struct coap_application_t {
   dtls_context_t *dtls_context;
 #endif
   LIST_STRUCT(endpoints);
+  void *app;			/**< application-specific data */
 } coap_application_t;
 
 typedef int coap_err_t;
@@ -52,6 +53,9 @@ coap_application_t *coap_new_application();
  * @param application The application object to delete.
  */
 void coap_free_application(coap_application_t *application);
+
+#define coap_application_set_app_data(APP,DATA) ((APP)->app = (DATA))
+#define coap_application_get_app_data(APP) ((APP)->app)
 
 /**
  * Attaches the specified endpoint object to application. This
@@ -84,5 +88,26 @@ void coap_application_detach(coap_application_t *application,
  *  an error condition.
  */
 coap_err_t coap_application_run(coap_application_t *application);
+
+/**
+ * Sends given @p pdu on @p local_interface to @p dst.
+ */
+ssize_t coap_application_sendmsg(coap_application_t *application,
+				 coap_endpoint_t *local_interface,
+				 coap_address_t *dst, coap_pdu_t *pdu, 
+				 int flags);
+
+/**
+ * Sends the request given in @p request on @p local_interface to @p
+ * dst.  If @p r_hnd is not NULL, an incoming response to @p request
+ * is delivered to @p r_hnd.
+ *
+ * @todo: add timeout
+ */
+ssize_t coap_application_send_request(coap_application_t *application,
+				      coap_endpoint_t *local_interface,
+				      coap_address_t *dst, coap_pdu_t *request,
+				      coap_response_handler_t r_hnd,
+				      int flags);
 
 #endif /* _COAP_APP_H_ */

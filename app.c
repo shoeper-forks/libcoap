@@ -49,10 +49,12 @@ dtls_application_data(struct dtls_context_t *dtls_context,
   struct list_ep_t *ep_item;
   coap_endpoint_t *local_interface = NULL;
 
+  fprintf(stderr, "####### received application data...\n");
   for (ep_item = list_head(app->endpoints); ep_item;
        ep_item = list_item_next(ep_item)) {
     if (session->ifindex == ep_item->ep->handle) {
       local_interface = ep_item->ep;
+      fprintf(stderr, "####### found local interface\n");
       break;
     }
   }
@@ -62,6 +64,7 @@ dtls_application_data(struct dtls_context_t *dtls_context,
     return -3;
   }
 
+  fprintf(stderr, "####### now pass to coap_handle_message\n");
   return coap_handle_message(app->coap_context,
   			     local_interface, 
 			     (coap_address_t *)session,
@@ -149,9 +152,11 @@ send_to_peer(struct coap_context_t *coap_context,
     session.addr.st = remote->addr.st;
     session.ifindex = local_interface->handle;
 
+    debug("call dtls_write\n");
     res = dtls_write(app->dtls_context, &session, 
 		     (uint8 *)data, len);
   } else {
+    debug("call coap_network_send\n");
     res = coap_network_send(coap_context, local_interface, remote, data, len);
   }
 #else /* HAVE_LIBTINYDTLS */
@@ -214,6 +219,42 @@ handle_read(coap_application_t *app, coap_endpoint_t *local) {
   }
 }
 
+#define COAP_MAX_TOKEN 8
+typedef struct coap_application_req_t {
+  struct coap_application_req_t *next;
+
+  /* coap_tick_t timeout; */
+  coap_address_t remote;
+  coap_response_handler_t response_handler;
+
+  size_t tokenlen;
+  unsigned char token[COAP_MAX_TOKEN];
+} coap_application_req_t;
+
+static coap_application_req_t r;
+
+static void message_handler(struct coap_context_t  *ctx, 
+			    const coap_endpoint_t *local_interface, 
+			    const coap_address_t *remote, 
+			    coap_pdu_t *sent,
+			    coap_pdu_t *received,
+			    const coap_tid_t id) {
+  coap_application_t *application;
+
+  application = coap_get_app_data(ctx);
+  assert(application);
+  
+  if (coap_address_equals(remote, &r.remote) &&
+      received->hdr->token_length == r.tokenlen &&
+      (r.tokenlen == 0 ||
+       memcmp(received->hdr->token, r.token, r.tokenlen) == 0)) {
+
+    if (r.response_handler) {
+      r.response_handler(ctx, local_interface, remote, sent, received, id);
+    }
+  }
+}
+
 coap_application_t *
 coap_new_application() {
   coap_application_t *app = COAP_MALLOC_TYPE(application);
@@ -254,6 +295,8 @@ coap_new_application() {
   /* register callback function to send data over secure channel */
   coap_set_cb(app->coap_context, send_to_peer, write);
  
+  coap_register_response_handler(app->coap_context, message_handler);
+
   return app;
 
  cleanup:
@@ -400,12 +443,15 @@ coap_check_retransmit(coap_context_t *context, coap_tick_t *next) {
 
   coap_ticks(&now);
   while(nextpdu && nextpdu->t <= now) {
+    coap_log(LOG_DEBUG, "call retransmit\n");
     coap_retransmit(context, coap_pop_next(context));
     nextpdu = coap_peek_next(context);
   }
 
-  if (next && nextpdu)
+  if (next && nextpdu) {
+    coap_log(LOG_DEBUG, "coap_check_retransmit: nextpdu->t is %u\n", nextpdu->t);
     *next = nextpdu->t;
+  }
 }
 
 static inline void
@@ -438,14 +484,19 @@ coap_application_run(coap_application_t *application) {
 #endif
     coap_check_retransmit(application->coap_context, &next_coap);
     
-    if (next_coap < next_dtls) {
+    coap_log(LOG_DEBUG, "next_dtls = %u\n", next_dtls);
+    coap_log(LOG_DEBUG, "next_coap = %u\n", next_coap);
+    if (next_coap && (!next_dtls || next_coap < next_dtls)) {
       timeval_from_ticks(next_coap - now, &tv);
       timeout = &tv;
+      coap_log(LOG_DEBUG, "coap timeout: %u\n", next_coap - now);
     } else if (next_dtls) {
       timeval_from_ticks(next_dtls - now, &tv);
       timeout = &tv;
+      coap_log(LOG_DEBUG, "dtls timeout: %u\n", next_dtls - now);
     } else {
       timeout = NULL; /* FIXME: pass timeout as parameter */
+      coap_log(LOG_DEBUG, "no timeout\n");
     }
 
     /* wait until something happens */
@@ -548,4 +599,23 @@ coap_application_sendmsg(coap_application_t *application,
   }
   
   return 0; /* FIXME: pdu length */
+}
+
+ssize_t
+coap_application_send_request(coap_application_t *application,
+			      coap_endpoint_t *local_interface,
+			      coap_address_t *dst, coap_pdu_t *request,
+			      coap_response_handler_t r_hnd,
+			      int flags) {
+  /* store: (dst, token, timeout) */
+  memcpy(&r.remote, dst, sizeof(coap_address_t));
+  r.response_handler = r_hnd;
+  r.tokenlen = request->hdr->token_length;
+  if (r.tokenlen)
+    memcpy(&r.token, request->hdr->token, r.tokenlen);
+
+  /* TODO: avoid storage duplication with retransmission queue */
+
+  return coap_application_sendmsg(application, local_interface,
+				  dst, request, flags);
 }
