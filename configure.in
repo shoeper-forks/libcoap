@@ -92,5 +92,6 @@ AC_CONFIG_FILES([Makefile
                  doc/Makefile
                  doc/Doxyfile
                  examples/Makefile
-                 tests/Makefile])
+                 tests/Makefile
+		 dcaf/Makefile])
 AC_OUTPUT

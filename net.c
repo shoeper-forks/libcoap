@@ -387,6 +387,7 @@ coap_send_impl(coap_context_t *context,
   bytes_written = context->cb_write(context, local_interface, dst,
 				    (unsigned char *)pdu->hdr, pdu->length);
 
+  coap_log(LOG_DEBUG, "coap_send_impl: %d bytes written\n", bytes_written);
   if (bytes_written >= 0) {
     coap_transaction_id(dst, pdu, &id);
   } else {
@@ -488,6 +489,7 @@ coap_send_confirmed(coap_context_t *context,
 
   assert(&context->sendqueue);
   coap_insert_node(&context->sendqueue, node, _order_timestamp);
+  coap_log(LOG_DEBUG, "coap_send_confirmed: add to sendqueue\n");
 
 #ifdef WITH_CONTIKI
   {			    /* (re-)initialize retransmission timer */

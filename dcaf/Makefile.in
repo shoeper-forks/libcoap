@@ -17,8 +17,8 @@ abs_builddir = @abs_builddir@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 # files and flags
-PROGRAMS:=dcaf-client as
-SOURCES:= dcaf-client.c address.c as.c
+PROGRAMS:=dcaf-client as rs
+SOURCES:= dcaf-client.c address.c as.c rs.c
 OBJECTS:= $(patsubst %.c, %.o, $(SOURCES))
 #CFLAGS:=-g -Wall -ansi -pedantic -I..
 CFLAGS:=-g -Wall @CFLAGS@
@@ -40,6 +40,7 @@ check:
 	echo DISTDIR: $(DISTDIR)
 	echo top_builddir: $(top_builddir)
 
+dcaf-client: $(libcoap)
 dcaf-client: dcaf-client.o address.o
 	$(CC) -o $@ $^ $(LDFLAGS) $(LDLIBS)
 

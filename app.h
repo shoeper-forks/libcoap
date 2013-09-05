@@ -97,4 +97,17 @@ ssize_t coap_application_sendmsg(coap_application_t *application,
 				 coap_address_t *dst, coap_pdu_t *pdu, 
 				 int flags);
 
+/**
+ * Sends the request given in @p request on @p local_interface to @p
+ * dst.  If @p r_hnd is not NULL, an incoming response to @p request
+ * is delivered to @p r_hnd.
+ *
+ * @todo: add timeout
+ */
+ssize_t coap_application_send_request(coap_application_t *application,
+				      coap_endpoint_t *local_interface,
+				      coap_address_t *dst, coap_pdu_t *request,
+				      coap_response_handler_t r_hnd,
+				      int flags);
+
 #endif /* _COAP_APP_H_ */

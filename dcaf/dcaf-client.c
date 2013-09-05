@@ -19,6 +19,11 @@
 #include "coap.h"
 
 #if HAVE_LIBTINYDTLS
+/* The following definitions are required because we cannot include
+ * tinydtls/debug.h at this point. */
+typedef coap_log_t log_t;
+extern void dtls_set_log_level(log_t level);
+
 typedef struct dcaf_context_t {
   coap_uri_t ap_uri;		/**< URI of our authentication proxy */
   coap_uri_t rs_uri;		/**< the RS to talk to */
@@ -86,54 +91,24 @@ create_request(coap_application_t *application, unsigned char type,
   return pdu;
 }
 
-int
-authorization_request(coap_application_t *application,
-		      coap_endpoint_t *local_interface,
-		      coap_uri_t *ap_uri) {
-  coap_address_t dst;
-  coap_pdu_t *pdu;
-
-  /* retrieve destination address from ap_uri */
-  if (!coap_address_resolve(ap_uri->host.s, ap_uri->host.length,
-			    ap_uri->port, &dst)) {
-    debug("cannot resolve address\n");
-    return 0;
-  }
-
-#ifndef NDEBUG
-  if (LOG_DEBUG <= coap_get_log_level()) {
-#ifndef INET6_ADDRSTRLEN
-#define INET6_ADDRSTRLEN 40
-#endif
-    unsigned char addr[INET6_ADDRSTRLEN+8];
-    
-    if (coap_print_addr(&dst, addr, INET6_ADDRSTRLEN+8)) {
-      debug("address resolved to: %s \n", addr); 
-    }
-  }
-#endif
-  /* create request PDU */
-  pdu = create_request(application, COAP_MESSAGE_CON, 
-		       COAP_REQUEST_POST, ap_uri, 0, NULL);
-  if (!pdu) {
-    coap_log(LOG_CRIT, "cannot create Authorization request\n");
-    return 0;
-  }
-    
-  /* send message */
-  return coap_application_sendmsg(application, local_interface, 
-				  &dst, pdu,
-				  COAP_APPLICATION_SEND_SECURE)
-    >= 0;
+void
+rs_response_handler(struct coap_context_t  *ctx, 
+		    const coap_endpoint_t *local_interface, 
+		    const coap_address_t *remote, 
+		    coap_pdu_t *sent,
+		    coap_pdu_t *received,
+		    const coap_tid_t id) {
+  
+  coap_log(LOG_INFO, "received response from RS\n");
 }
 
 void
-message_handler(struct coap_context_t  *ctx, 
-		const coap_endpoint_t *local_interface, 
-		const coap_address_t *remote, 
-		coap_pdu_t *sent,
-		coap_pdu_t *received,
-		const coap_tid_t id) {
+auth_reponse_handler(struct coap_context_t  *ctx, 
+		     const coap_endpoint_t *local_interface, 
+		     const coap_address_t *remote, 
+		     coap_pdu_t *sent,
+		     coap_pdu_t *received,
+		     const coap_tid_t id) {
   coap_application_t *application;
   dcaf_context_t *dcaf_context; 
   coap_address_t dst;
@@ -142,8 +117,10 @@ message_handler(struct coap_context_t  *ctx,
   /* we are only interested in 2.05 responses for now
    * TODO: check if token matches our request
    */
-  if (received->hdr->code != COAP_RESPONSE_CODE(205))
+  if (received->hdr->code != COAP_RESPONSE_CODE(205)) {
+    coap_log(LOG_INFO, "received response was not a 2.05 reponse\n");
     return;
+  }
 
   application = coap_get_app_data(ctx);
   assert(application);
@@ -168,7 +145,7 @@ message_handler(struct coap_context_t  *ctx,
     unsigned char addr[INET6_ADDRSTRLEN+8];
     
     if (coap_print_addr(&dst, addr, INET6_ADDRSTRLEN+8)) {
-      debug("address resolved to: %s \n", addr); 
+      debug("rs address resolved to: %s \n", addr); 
     }
   }
 #endif
@@ -182,8 +159,52 @@ message_handler(struct coap_context_t  *ctx,
   }
     
   /* send message */
-  coap_application_sendmsg(application, (coap_endpoint_t *)local_interface, 
-			   &dst, pdu, COAP_APPLICATION_SEND_SECURE);
+  coap_application_send_request(application, 
+				(coap_endpoint_t *)local_interface, 
+				&dst, pdu, rs_response_handler,
+				COAP_APPLICATION_SEND_SECURE);
+}
+
+int
+authorization_request(coap_application_t *application,
+		      coap_endpoint_t *local_interface,
+		      coap_uri_t *ap_uri) {
+  coap_address_t dst;
+  coap_pdu_t *pdu;
+
+  /* retrieve destination address from ap_uri */
+  if (!coap_address_resolve(ap_uri->host.s, ap_uri->host.length,
+			    ap_uri->port, &dst)) {
+    debug("cannot resolve address\n");
+    return 0;
+  }
+
+#ifndef NDEBUG
+  if (LOG_DEBUG <= coap_get_log_level()) {
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 40
+#endif
+    unsigned char addr[INET6_ADDRSTRLEN+8];
+    
+    if (coap_print_addr(&dst, addr, INET6_ADDRSTRLEN+8)) {
+      debug("ap address resolved to: %s \n", addr); 
+    }
+  }
+#endif
+  /* create request PDU */
+  pdu = create_request(application, COAP_MESSAGE_CON, 
+		       COAP_REQUEST_POST, ap_uri, 0, NULL);
+  if (!pdu) {
+    coap_log(LOG_CRIT, "cannot create Authorization request\n");
+    return 0;
+  }
+    
+  /* send message */
+  return coap_application_send_request(application, local_interface, 
+				       &dst, pdu,
+				       auth_reponse_handler,
+				       COAP_APPLICATION_SEND_SECURE)
+    >= 0;
 }
 
 int
@@ -210,6 +231,7 @@ main(int argc, char **argv) {
   }
 
   coap_set_log_level(log_level);
+  dtls_set_log_level(log_level);
 
   /* read as and rs uri */
   if (optind < argc) {
@@ -237,7 +259,7 @@ main(int argc, char **argv) {
      * local variables live longer than app itself. */
     coap_application_set_app_data(app, &dcaf_context);
 
-    coap_register_response_handler(app->coap_context, message_handler);
+    /* coap_register_response_handler(app->coap_context, message_handler); */
 
     /* bind interfaces */
 
