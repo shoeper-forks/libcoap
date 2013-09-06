@@ -235,6 +235,7 @@ coap_new_context() {
   coap_register_option(c, COAP_OPTION_URI_PORT);
   coap_register_option(c, COAP_OPTION_URI_PATH);
   coap_register_option(c, COAP_OPTION_URI_QUERY);
+  coap_register_option(c, COAP_OPTION_ACCEPT);
   coap_register_option(c, COAP_OPTION_PROXY_URI);
   coap_register_option(c, COAP_OPTION_PROXY_SCHEME);
 
@@ -535,7 +536,9 @@ coap_retransmit(coap_context_t *context, coap_queue_t *node) {
 
   /* no more retransmissions, remove node from system */
 
-  debug("** removed transaction %d\n", node->id);
+#ifndef WITH_CONTIKI
+  debug("** removed transaction %d\n", ntohs(node->id));
+#endif
 
 #ifndef WITHOUT_OBSERVE
   /* Check if subscriptions exist that should be canceled after
@@ -683,6 +686,53 @@ coap_remove_from_queue(coap_queue_t **queue, coap_tid_t id, coap_queue_t **node)
 
 }
 
+static inline int
+token_match(const unsigned char *a, size_t alen, 
+	    const unsigned char *b, size_t blen) {
+  return alen == blen && (alen == 0 || memcmp(a, b, alen) == 0);
+}
+
+void
+coap_cancel_all_messages(coap_context_t *context, const coap_address_t *dst,
+			 const unsigned char *token, size_t token_length) {
+  /* cancel all messages in sendqueue that are for dst 
+   * and use the specified token */
+  coap_queue_t *p, *q;
+  
+  debug("cancel_all_messages\n");
+  while (context->sendqueue && 
+	 coap_address_equals(dst, &context->sendqueue->remote) &&
+	 token_match(token, token_length, 
+		     context->sendqueue->pdu->hdr->token, 
+		     context->sendqueue->pdu->hdr->token_length)) {
+    q = context->sendqueue; 
+    context->sendqueue = q->next;
+    debug("**** removed transaction %d\n", ntohs(q->pdu->hdr->id));
+    coap_delete_node(q);
+  }
+
+  if (!context->sendqueue)
+    return;
+
+  p = context->sendqueue;
+  q = p->next;
+  
+  /* when q is not NULL, it does not match (dst, token), so we can skip it */
+  while (q) {
+    if (coap_address_equals(dst, &q->remote) &&
+	token_match(token, token_length,
+		    q->pdu->hdr->token, q->pdu->hdr->token_length)) {
+      p->next = q->next;
+      debug("**** removed transaction %d\n", ntohs(q->pdu->hdr->id));
+      coap_delete_node(q);
+      q = p->next;
+    } else {
+      p = q;
+      q = q->next;
+    }
+  }
+}
+
 coap_queue_t *
 coap_find_transaction(coap_queue_t *queue, coap_tid_t id) {
   while (queue && queue->id != id)
@@ -699,6 +749,7 @@ coap_new_error_response(coap_pdu_t *request, unsigned char code,
   size_t size = sizeof(coap_hdr_t) + request->hdr->token_length;
   int type; 
   coap_opt_t *option;
+  unsigned short opt_type = 0;	/* used for calculating delta-storage */
 
 #if COAP_ERROR_PHRASE_LENGTH > 0
   char *phrase = coap_response_phrase(code);
@@ -722,8 +773,38 @@ coap_new_error_response(coap_pdu_t *request, unsigned char code,
 
   coap_option_iterator_init(request, &opt_iter, opts);
 
-  while((option = coap_option_next(&opt_iter)))
-    size += COAP_OPT_SIZE(option);
+  /* Add size of each unknown critical option. As known critical
+     options as well as elective options are not copied, the delta
+     value might grow.
+   */
+  while((option = coap_option_next(&opt_iter))) {
+    unsigned short delta = opt_iter.type - opt_type;
+    /* calculate space required to encode (opt_iter.type - opt_type) */
+    if (delta < 13) {
+      size++;
+    } else if (delta < 269) {
+      size += 2;
+    } else {
+      size += 3;
+    }
+
+    /* add coap_opt_length(option) and the number of additional bytes
+     * required to encode the option length */
+    
+    size += coap_opt_length(option);
+    switch (*option & 0x0f) {
+    case 0x0e:
+      size++;
+      /* fall through */
+    case 0x0d:
+      size++;
+      break;
+    default:
+      ;
+    }
+
+    opt_type = opt_iter.type;
+  }
 
   /* Now create the response and fill with options and payload data. */
   response = coap_pdu_init(type, code, request->hdr->id, size);
@@ -952,6 +1033,39 @@ handle_locally(coap_context_t *context, coap_queue_t *node) {
   return 1;
 }
 
+/**
+ * This function handles RST messages received for the message passed
+ * in @p sent.
+ */
+static void
+coap_handle_rst(coap_context_t *context, const coap_queue_t *sent) {
+#ifndef WITHOUT_OBSERVE
+  coap_resource_t *r, *tmp;
+  str token = { 0, NULL };
+
+  /* remove observer for this resource, if any 
+   * get token from sent and try to find a matching resource. Uh!
+   */
+
+  COAP_SET_STR(&token, sent->pdu->hdr->token_length, sent->pdu->hdr->token);
+
+#ifndef WITH_CONTIKI
+  HASH_ITER(hh, context->resources, r, tmp) {
+    coap_delete_observer(r, &sent->remote, &token);
+    coap_cancel_all_messages(context, &sent->remote, token.s, token.length);
+  }
+#else /* WITH_CONTIKI */
+  r = (coap_resource_t *)resource_storage.mem;
+  for (i = 0; i < resource_storage.num; ++i, ++r) {
+    if (resource_storage.count[i]) {
+      coap_delete_observer(r, &sent->remote, &token);
+      coap_cancel_all_messages(context, &sent->remote, token.s, token.length);
+    }
+  }
+#endif /* WITH_CONTIKI */
+#endif /* WITOUT_OBSERVE */  
+}
+
 void
 coap_dispatch(coap_context_t *context, coap_queue_t *rcvd) {
   /* coap_queue_t *rcvd = NULL, *sent = NULL; */
@@ -988,6 +1102,11 @@ coap_dispatch(coap_context_t *context, coap_queue_t *rcvd) {
       /* FIXME: if sent code was >= 64 the message might have been a 
        * notification. Then, we must flag the observer to be alive
        * by setting obs->fail_cnt = 0. */
+      if (sent && COAP_RESPONSE_CLASS(sent->pdu->hdr->code) == 2) {
+	const str token = 
+	  { sent->pdu->hdr->token_length, sent->pdu->hdr->token };
+	coap_touch_observer(context, &sent->remote, &token);
+      }
       break;
 
     case COAP_MESSAGE_RST :
@@ -1000,14 +1119,11 @@ coap_dispatch(coap_context_t *context, coap_queue_t *rcvd) {
 #else /* WITH_CONTIKI */
       coap_log(LOG_ALERT, "got RST for message %u\n", uip_ntohs(rcvd->pdu->hdr->id));
 #endif /* WITH_CONTIKI */
-
-      /* find transaction in sendqueue to stop retransmission */
       coap_remove_from_queue(&context->sendqueue, rcvd->id, &sent);
 
-      /* @todo remove observer for this resource, if any 
-       * get token from sent and try to find a matching resource. Uh!
-       */
-      break;
+      if (sent)
+	coap_handle_rst(context, sent);
+      goto cleanup;
 
     case COAP_MESSAGE_NON :	/* check for unknown critical options */
       if (coap_option_check_critical(context, rcvd->pdu, opt_filter) == 0)

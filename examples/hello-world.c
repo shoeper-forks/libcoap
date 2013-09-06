@@ -69,8 +69,6 @@ main(int argc, char **argv) {
     if (init_resource(app->coap_context)) {
       
       result = (int)coap_application_run(app);	/* main loop */
-
-      coap_free_application(app);
     }
   }
 

@@ -1,3 +1,15 @@
+2013-09-03  Olaf Bergmann  <bergmann@tzi.org>
+
+	* option.h (coap_option_setb): increased size of option type
+	argument
+
+	* tests/test_error_response.c (t_init_error_response_tests): new
+	tests for error response generation
+
+	* tests/test_pdu.c (t_encode_pdu5): fixed number for option Accept
+
+	* net.c (coap_new_error_response): fixed option size calculation
+
 2013-07-22  Olaf Bergmann  <bergmann@tzi.org>
 
 	* examples/client.c (main): Added support for DTLS (using tinydtls).
@@ -14,6 +26,12 @@
 	* coap_io.c: network I/O functions
 
 	* coap_io.h: definition of virtual endpoint
+
+2013-07-04  Olaf Bergmann  <bergmann@tzi.org>
+
+	* net.c (coap_new_context): register critical Accept option
+
+	* pdu.c: option codes for Accept and Size1 according to coap-18
 
 2013-02-01  Olaf Bergmann  <bergmann@tzi.org>
 
