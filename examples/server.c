@@ -98,7 +98,7 @@ hnd_get_time(coap_context_t  *ctx, struct coap_resource_t *resource,
 
   if (request != NULL &&
       coap_check_option(request, COAP_OPTION_OBSERVE, &opt_iter)) {
-    subscription = coap_add_observer(resource, peer, token);
+    subscription = coap_add_observer(resource, local, peer, token);
     if (subscription) {
       subscription->non = request->hdr->type == COAP_MESSAGE_NON;
       coap_add_option(response, COAP_OPTION_OBSERVE, 0, NULL);

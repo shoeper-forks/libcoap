@@ -598,13 +598,13 @@ coap_notify_observers(coap_context_t *context, coap_resource_t *r) {
 	response->hdr->type = COAP_MESSAGE_CON;
       }
       /* fill with observer-specific data */
-      h(context, r, &obs->subscriber, NULL, &token, response);
+      h(context, r, obs->local_if, &obs->subscriber, NULL, &token, response);
 
       if (response->hdr->type == COAP_MESSAGE_CON) {
-	tid = coap_send_confirmed(context, &obs->subscriber, response);
+	tid = coap_send_confirmed(context, obs->local_if, &obs->subscriber, response);
 	obs->non_cnt = 0;
       } else {
-	tid = coap_send(context, &obs->subscriber, response);
+	tid = coap_send(context, obs->local_if, &obs->subscriber, response);
 	obs->non_cnt++;
       }
 
