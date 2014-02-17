@@ -32,8 +32,13 @@
 #define _DTLS_LIST_H_
 
 #ifndef WITH_CONTIKI
-#include "uthash.h"
-#include "utlist.h"
+#ifdef HAVE_LIBTINYDTLS
+# include <tinydtls/uthash.h>
+# include <tinydtls/utlist.h>
+#else /* HAVE_LIBTINYDTLS */
+# include "uthash.h"
+# include "utlist.h"
+#endif /* HAVE_LIBTINYDTLS */
 
 /* We define list structures and utility functions to be compatible
  * with Contiki list structures. The Contiki list API is part of the

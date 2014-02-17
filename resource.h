@@ -27,8 +27,11 @@
 #endif /* COAP_RESOURCE_CHECK_TIME */
 
 #ifndef WITH_CONTIKI
-#include "uthash.h"
-#else /* WITH_CONTIKI */
+# ifdef HAVE_LIBTINYDTLS
+#  include <tinydtls/uthash.h>
+# else
+#  include "uthash.h"
+# endif /* HAVE_LIBTINYDTLS */
 #endif /* WITH_CONTIKI */
 #include "hashkey.h"
 #include "async.h"
