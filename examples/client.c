@@ -363,7 +363,7 @@ message_handler(struct coap_context_t  *ctx,
       if (COAP_OPT_BLOCK_MORE(block_opt)) {
 	/* more bit is set */
 	debug("found the M bit, block size is %u, block nr. %u\n",
-	      COAP_OPT_BLOCK_SZX(block_opt), COAP_OPT_BLOCK_NUM(block_opt));
+	      COAP_OPT_BLOCK_SZX(block_opt), coap_opt_block_num(block_opt));
 
 	/* create pdu with request for next block */
 	pdu = coap_new_request(ctx, method, NULL); /* first, create bare PDU w/o any option  */
@@ -386,9 +386,9 @@ message_handler(struct coap_context_t  *ctx,
 
 	  /* finally add updated block option from response, clear M bit */
 	  /* blocknr = (blocknr & 0xfffffff7) + 0x10; */
-	  debug("query block %d\n", (COAP_OPT_BLOCK_NUM(block_opt) + 1));
+	  debug("query block %d\n", (coap_opt_block_num(block_opt) + 1));
 	  coap_add_option(pdu, blktype, coap_encode_var_bytes(buf, 
-	      ((COAP_OPT_BLOCK_NUM(block_opt) + 1) << 4) | 
+	      ((coap_opt_block_num(block_opt) + 1) << 4) | 
               COAP_OPT_BLOCK_SZX(block_opt)), buf);
 
 	  if (received->hdr->type == COAP_MESSAGE_CON)
@@ -1220,7 +1220,7 @@ main(int argc, char **argv) {
   char port_str[NI_MAXSERV] = "0";
   int opt, res;
   char *group = NULL;
-  coap_log_t log_level = LOG_WARN;
+  coap_log_t log_level = LOG_WARNING;
   coap_tid_t tid = COAP_INVALID_TID;
 
 #if HAVE_LIBTINYDTLS
@@ -1457,15 +1457,15 @@ main(int argc, char **argv) {
     nextpdu = coap_peek_next( ctx );
 
     coap_ticks(&now);
-    while ( nextpdu && nextpdu->t <= now ) {
+    while (nextpdu && nextpdu->t <= now - ctx->sendqueue_basetime) {
       coap_retransmit( ctx, coap_pop_next( ctx ));
       nextpdu = coap_peek_next( ctx );
     }
 
-    if (nextpdu && nextpdu->t < min(obs_wait ? obs_wait : max_wait, max_wait)) { 
+    if (nextpdu && nextpdu->t < min(obs_wait ? obs_wait : max_wait, max_wait) - now) { 
       /* set timeout if there is a pdu to send */
-      tv.tv_usec = ((nextpdu->t - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-      tv.tv_sec = (nextpdu->t - now) / COAP_TICKS_PER_SECOND;
+      tv.tv_usec = ((nextpdu->t) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
+      tv.tv_sec = (nextpdu->t) / COAP_TICKS_PER_SECOND;
     } else {
       /* check if obs_wait fires before max_wait */
       if (obs_wait && obs_wait < max_wait) {

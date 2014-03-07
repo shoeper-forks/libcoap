@@ -1,6 +1,6 @@
 /* net.c -- CoAP network interface
  *
- * Copyright (C) 2010--2012 Olaf Bergmann <bergmann@tzi.org>
+ * Copyright (C) 2010--2014 Olaf Bergmann <bergmann@tzi.org>
  *
  * This file is part of the CoAP library libcoap. Please see
  * README for terms of use. 
@@ -10,6 +10,9 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#ifdef HAVE_LIMITS_H
+#include <limits.h>
+#endif
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
 #elif HAVE_SYS_UNISTD_H
@@ -26,6 +29,12 @@
 #include <arpa/inet.h>
 #endif
 
+#ifdef WITH_LWIP
+#include <lwip/pbuf.h>
+#include <lwip/udp.h>
+#include <lwip/timers.h>
+#endif
+
 #include "debug.h"
 #include "mem.h"
 #include "str.h"
@@ -33,9 +42,10 @@
 #include "resource.h"
 #include "option.h"
 #include "encode.h"
+#include "block.h"
 #include "net.h"
 
-#ifndef WITH_CONTIKI
+#if defined(WITH_POSIX)
 
 time_t clock_offset;
 
@@ -48,7 +58,26 @@ static inline void
 coap_free_node(coap_queue_t *node) {
   coap_free(node);
 }
-#else /* WITH_CONTIKI */
+#endif /* WITH_POSIX */
+#ifdef WITH_LWIP
+
+#include <lwip/memp.h>
+
+static void coap_retransmittimer_execute(void *arg);
+static void coap_retransmittimer_restart(coap_context_t *ctx);
+
+static inline coap_queue_t *
+coap_malloc_node() {
+	return (coap_queue_t *)memp_malloc(MEMP_COAP_NODE);
+}
+
+static inline void
+coap_free_node(coap_queue_t *node) {
+	memp_free(MEMP_COAP_NODE, node);
+}
+
+#endif /* WITH_LWIP */
+#ifdef WITH_CONTIKI
 # ifndef DEBUG
 #  define DEBUG DEBUG_PRINT
 # endif /* DEBUG */
@@ -81,15 +110,74 @@ coap_free_node(coap_queue_t *node) {
   memb_free(&node_storage, node);
 }
 #endif /* WITH_CONTIKI */
+#ifdef WITH_LWIP
 
-int print_wellknown(coap_context_t *, unsigned char *, size_t *, coap_opt_t *);
+/** Callback to udp_recv when using lwIP. Gets called by lwIP on arriving
+ * packages, places a reference in context->pending_package, and calls
+ * coap_read to process the package. Thus, coap_read needs not be called in
+ * lwIP main loops. (When modifying this for thread-like operation, ie. if you
+ * remove the coap_read call from this, make sure that coap_read gets a chance
+ * to run before this callback is entered the next time.)
+ */
+static void received_package(void *arg, struct udp_pcb *upcb, struct pbuf *p, ip_addr_t *addr, u16_t port)
+{
+  struct coap_context_t *context = (coap_context_t *)arg;
+
+  LWIP_ASSERT("pending_package was not cleared.", context->pending_package == NULL);
+
+  context->pending_package = p; /* we don't free it, coap_read has to do that */
+  context->pending_address.addr = addr->addr; /* FIXME: this has to become address-type independent, probably there'll be an lwip function for that */
+  context->pending_port = port;
+
+  coap_read(context);
+}
+
+#endif /* WITH_LWIP */
+
+int print_wellknown(coap_context_t *, unsigned char *, size_t *, size_t, coap_opt_t *);
 
 void coap_handle_failed_notify(coap_context_t *, const coap_address_t *, 
 			       const str *);
 
+unsigned int
+coap_adjust_basetime(coap_context_t *ctx, coap_tick_t now) {
+  unsigned int result = 0;
+  coap_tick_diff_t delta = now - ctx->sendqueue_basetime;
+
+  if (ctx->sendqueue) {
+    /* delta < 0 means that the new time stamp is before the old. */
+    if (delta <= 0) {
+      ctx->sendqueue->t -= delta;
+    } else {
+      /* This case is more complex: The time must be advanced forward,
+       * thus possibly leading to timed out elements at the queue's
+       * start. For every element that has timed out, its relative
+       * time is set to zero and the result counter is increased. */
+
+      coap_queue_t *q = ctx->sendqueue;
+      coap_tick_t t = 0;
+      while (q && (t + q->t < (coap_tick_t)delta)) {
+	t += q->t;
+	q->t = 0;
+	result++;
+	q = q->next;
+      }
+
+      /* finally adjust the first element that has not expired */
+      if (q) {
+	q->t = (coap_tick_t)delta - t;
+      }
+    }
+  }
+
+  /* adjust basetime */
+  ctx->sendqueue_basetime += delta;
+
+  return result;
+}
+
 int
-coap_insert_node(coap_queue_t **queue, coap_queue_t *node,
-		 int (*order)(coap_queue_t *, coap_queue_t *node) ) {
+coap_insert_node(coap_queue_t **queue, coap_queue_t *node) {
   coap_queue_t *p, *q;
   if ( !queue || !node )
     return 0;
@@ -102,19 +190,24 @@ coap_insert_node(coap_queue_t **queue, coap_queue_t *node,
 
   /* replace queue head if PDU's time is less than head's time */
   q = *queue;
-  if ( order( node, q ) < 0) {
+  if (node->t < q->t) {
     node->next = q;
     *queue = node;
+    q->t -= node->t;		/* make q->t relative to node->t */
     return 1;
   }
 
   /* search for right place to insert */
   do {
+    node->t -= q->t;		/* make node-> relative to q->t */
     p = q;
     q = q->next;
-  } while ( q && order( node, q ) >= 0 );
+  } while (q && q->t <= node->t);
 
   /* insert new item */
+  if (q) {
+    q->t -= node->t;		/* make q->t relative to node->t */
+  }
   node->next = q;
   p->next = node;
   return 1;
@@ -147,7 +240,7 @@ coap_new_node() {
 
   if ( ! node ) {
 #ifndef NDEBUG
-    coap_log(LOG_WARN, "coap_new_node: malloc");
+    coap_log(LOG_WARNING, "coap_new_node: malloc\n");
 #endif
     return NULL;
   }
@@ -173,6 +266,9 @@ coap_pop_next( coap_context_t *context ) {
 
   next = context->sendqueue;
   context->sendqueue = context->sendqueue->next;
+  if (context->sendqueue) {
+    context->sendqueue->t += next->t;
+  }
   next->next = NULL;
   return next;
 }
@@ -198,9 +294,14 @@ is_wkc(coap_key_t k) {
 
 coap_context_t *
 coap_new_context() {
-#ifndef WITH_CONTIKI
+#ifdef WITH_POSIX
   coap_context_t *c = coap_malloc( sizeof( coap_context_t ) );
-#else /* WITH_CONTIKI */
+  int reuse = 1;
+#endif /* WITH_POSIX */
+#ifdef WITH_LWIP
+  coap_context_t *c = memp_malloc(MEMP_COAP_CONTEXT);
+#endif /* WITH_LWIP */
+#ifdef WITH_CONTIKI
   coap_context_t *c;
 
   if (initialized)
@@ -208,14 +309,21 @@ coap_new_context() {
 #endif /* WITH_CONTIKI */
 
   coap_clock_init();
+#ifdef WITH_LWIP
+  prng_init(LWIP_RAND());
+#else /* WITH_LWIP */
   prng_init((unsigned long)&c ^ clock_offset);
+#endif /* WITH_LWIP */
 
 #ifndef WITH_CONTIKI
-  if (!c) {
-    coap_log(LOG_EMERG, "coap_init: malloc:");
+  if ( !c ) {
+#ifndef NDEBUG
+    coap_log(LOG_EMERG, "coap_init: malloc:\n");
+#endif
     return NULL;
   }
-#else /* WITH_CONTIKI */
+#endif /* not WITH_CONTIKI */
+#ifdef WITH_CONTIKI
   coap_resources_init();
   coap_pdu_resources_init();
 
@@ -238,6 +346,8 @@ coap_new_context() {
   coap_register_option(c, COAP_OPTION_ACCEPT);
   coap_register_option(c, COAP_OPTION_PROXY_URI);
   coap_register_option(c, COAP_OPTION_PROXY_SCHEME);
+  coap_register_option(c, COAP_OPTION_BLOCK2);
+  coap_register_option(c, COAP_OPTION_BLOCK1);
 
   /* set default callback function for sending data over the network */
   coap_set_cb(c, coap_network_send, write);
@@ -253,17 +363,22 @@ coap_new_context() {
   etimer_set(&the_coap_context.retransmit_timer, 0xFFFF);
   PROCESS_CONTEXT_END(&coap_retransmit_process);
 #endif /* WITH_CONTIKI */
+#ifdef WITH_LWIP
+  c->timer_configured = 0;
+#endif
 
   return c;
 }
 
 void
-coap_free_context(coap_context_t *context) {
-#ifndef WITH_CONTIKI
-  coap_resource_t *res, *rtmp;
-#endif /* WITH_CONTIKI */
-
-  if (!context)
+coap_free_context( coap_context_t *context ) {
+#if defined(WITH_POSIX) || defined(WITH_LWIP)
+  coap_resource_t *res;
+#ifndef COAP_RESOURCES_NOHASH
+  coap_resource_t *rtmp;
+#endif
+#endif /* WITH_POSIX || WITH_LWIP */
+  if ( !context )
     return;
 
   /* FIXME: free endpoints */
@@ -271,14 +386,29 @@ coap_free_context(coap_context_t *context) {
   coap_delete_all(context->recvqueue);
   coap_delete_all(context->sendqueue);
 
-#ifndef WITH_CONTIKI
+#ifdef WITH_LWIP
+  context->sendqueue = NULL;
+  coap_retransmittimer_restart(context);
+#endif
+
+#if defined(WITH_POSIX) || defined(WITH_LWIP)
+#ifdef COAP_RESOURCES_NOHASH
+  LL_FOREACH(context->resources, res) {
+#else
   HASH_ITER(hh, context->resources, res, rtmp) {
+#endif
     coap_delete_resource(context, res->key);
   }
+#endif /* WITH_POSIX || WITH_LWIP */
 
-  /* coap_delete_list(context->subscriptions); */
+#ifdef WITH_POSIX
   coap_free(context);
-#else /* WITH_CONTIKI */
+#endif /* WITH_POSIX */
+#ifdef WITH_LWIP
+  udp_remove(context->pcb);
+  memp_free(MEMP_COAP_CONTEXT, context);
+#endif /* WITH_LWIP */
+#ifdef WITH_CONTIKI
   memset(&the_coap_context, 0, sizeof(coap_context_t));
   initialized = 0;
 #endif /* WITH_CONTIKI */
@@ -329,7 +459,7 @@ coap_transaction_id(const coap_address_t *peer, const coap_pdu_t *pdu,
   /* Compare the complete address structure in case of IPv4. For IPv6,
    * we need to look at the transport address only. */
 
-#ifndef WITH_CONTIKI
+#ifdef WITH_POSIX
   switch (peer->addr.sa.sa_family) {
   case AF_INET:
     coap_hash((const unsigned char *)&peer->addr.sa, peer->size, h);
@@ -343,10 +473,12 @@ coap_transaction_id(const coap_address_t *peer, const coap_pdu_t *pdu,
   default:
     return;
   }
-#else /* WITH_CONTIKI */
+#endif
+#if defined(WITH_LWIP) || defined(WITH_CONTIKI)
+    /* FIXME: with lwip, we can do better */
     coap_hash((const unsigned char *)&peer->port, sizeof(peer->port), h);
     coap_hash((const unsigned char *)&peer->addr, sizeof(peer->addr), h);  
-#endif /* WITH_CONTIKI */
+#endif /* WITH_LWIP || WITH_CONTIKI */
 
   coap_hash((const unsigned char *)&pdu->hdr->id, sizeof(unsigned short), h);
 
@@ -373,6 +505,7 @@ coap_send_ack(coap_context_t *context,
 }
 
 /* releases space allocated by PDU if free_pdu is set */
+#if defined(WITH_POSIX) || defined(WITH_CONTIKI)
 coap_tid_t
 coap_send_impl(coap_context_t *context, 
 	       const coap_endpoint_t *local_interface,
@@ -397,6 +530,64 @@ coap_send_impl(coap_context_t *context,
 
   return id;
 }
+#endif /* WITH_POSIX */
+#ifdef WITH_LWIP
+/* FIXME: need to use cb_write() */
+coap_tid_t
+coap_send_impl(coap_context_t *context,
+	       const coap_address_t *dst,
+	       coap_pdu_t *pdu) {
+  coap_tid_t id = COAP_INVALID_TID;
+  struct pbuf *p;
+  uint8_t err;
+  char *data_backup;
+
+  if ( !context || !dst || !pdu )
+  {
+    return id;
+  }
+
+  data_backup = pdu->data;
+
+  /* FIXME: we can't check this here with the existing infrastructure, but we
+   * should actually check that the pdu is not held by anyone but us. the
+   * respective pbuf is already exclusively owned by the pdu. */
+
+  p = pdu->pbuf;
+  LWIP_ASSERT("The PDU header is not where it is expected", pdu->hdr == p->payload + sizeof(coap_pdu_t));
+
+  err = pbuf_header(p, -sizeof(coap_pdu_t));
+  if (err)
+  {
+    debug("coap_send_impl: pbuf_header failed\n");
+    pbuf_free(p);
+    return id;
+  }
+
+  coap_transaction_id(dst, pdu, &id);
+
+  pbuf_realloc(p, pdu->length);
+
+  udp_sendto(context->pcb, p,
+			&dst->addr, dst->port);
+
+  pbuf_header(p, -(ptrdiff_t)((uint8_t*)pdu - (uint8_t*)p->payload) - sizeof(coap_pdu_t)); /* FIXME hack around udp_sendto not restoring; see http://lists.gnu.org/archive/html/lwip-users/2013-06/msg00008.html. for udp over ip over ethernet, this was -42; as we're doing ppp too, this has to be calculated generically */
+
+  err = pbuf_header(p, sizeof(coap_pdu_t));
+  LWIP_ASSERT("Cannot undo pbuf_header", err == 0);
+
+  /* restore destroyed pdu data */
+  LWIP_ASSERT("PDU not restored", p->payload == pdu);
+  pdu->max_size = p->tot_len - sizeof(coap_pdu_t); /* reduced after pbuf_realloc */
+  pdu->hdr = p->payload + sizeof(coap_pdu_t);
+  pdu->max_delta = 0; /* won't be used any more */
+  pdu->length = pdu->max_size;
+  pdu->data = data_backup;
+  pdu->pbuf = p;
+
+  return id;
+}
+#endif /* WITH_LWIP */
 
 coap_tid_t 
 coap_send(coap_context_t *context, 
@@ -447,11 +638,6 @@ coap_send_message_type(coap_context_t *context,
   return result;
 }
 
-int
-_order_timestamp( coap_queue_t *lhs, coap_queue_t *rhs ) {
-  return lhs && rhs && ( lhs->t < rhs->t ) ? -1 : 1;
-}
-
 coap_tid_t
 coap_send_confirmed(coap_context_t *context, 
 		    const coap_endpoint_t *local_interface,
@@ -475,22 +661,39 @@ coap_send_confirmed(coap_context_t *context,
   }
   
   prng((unsigned char *)&r,sizeof(r));
-  coap_ticks(&now);
-  node->t = now;
 
   /* add randomized RESPONSE_TIMEOUT to determine retransmission timeout */
   node->timeout = COAP_DEFAULT_RESPONSE_TIMEOUT * COAP_TICKS_PER_SECOND +
     (COAP_DEFAULT_RESPONSE_TIMEOUT >> 1) *
     ((COAP_TICKS_PER_SECOND * (r & 0xFF)) >> 8);
-  node->t += node->timeout;
 
   node->local_if = (coap_endpoint_t *)local_interface;
   memcpy(&node->remote, dst, sizeof(coap_address_t));
   node->pdu = pdu;
 
-  assert(&context->sendqueue);
-  coap_insert_node(&context->sendqueue, node, _order_timestamp);
-  coap_log(LOG_DEBUG, "coap_send_confirmed: add to sendqueue\n");
+  /* Set timer for pdu retransmission. If this is the first element in
+   * the retransmission queue, the base time is set to the current
+   * time and the retransmission time is node->timeout. If there is
+   * already an entry in the sendqueue, we must check if this node is
+   * to be retransmitted earlier. Therefore, node->timeout is first
+   * normalized to the base time and then inserted into the queue with
+   * an adjusted relative time.
+   */
+  coap_ticks(&now);
+  if (context->sendqueue == NULL) {
+    node->t = node->timeout;
+    context->sendqueue_basetime = now;
+  } else {
+    /* make node->t relative to context->sendqueue_basetime */
+    node->t = (now - context->sendqueue_basetime) + node->timeout;
+  }
+
+  coap_insert_node(&context->sendqueue, node);
+
+#ifdef WITH_LWIP
+  if (node == context->sendqueue) /* don't bother with timer stuff if there are earlier retransmits */
+    coap_retransmittimer_restart(context);
+#endif
 
 #ifdef WITH_CONTIKI
   {			    /* (re-)initialize retransmission timer */
@@ -501,8 +704,7 @@ coap_send_confirmed(coap_context_t *context,
 
     /* must set timer within the context of the retransmit process */
     PROCESS_CONTEXT_BEGIN(&coap_retransmit_process);
-    etimer_set(&context->retransmit_timer, 
-	       now < nextpdu->t ? nextpdu->t - now : 0);
+    etimer_set(&context->retransmit_timer, nextpdu->t);
     PROCESS_CONTEXT_END(&coap_retransmit_process);
   }
 #endif /* WITH_CONTIKI */
@@ -518,16 +720,15 @@ coap_retransmit(coap_context_t *context, coap_queue_t *node) {
   /* re-initialize timeout when maximum number of retransmissions are not reached yet */
   if (node->retransmit_cnt < COAP_DEFAULT_MAX_RETRANSMIT) {
     node->retransmit_cnt++;
-    node->t += (node->timeout << node->retransmit_cnt);
-    coap_insert_node(&context->sendqueue, node, _order_timestamp);
+    node->t = node->timeout << node->retransmit_cnt;
+    coap_insert_node(&context->sendqueue, node);
+#ifdef WITH_LWIP
+    if (node == context->sendqueue) /* don't bother with timer stuff if there are earlier retransmits */
+      coap_retransmittimer_restart(context);
+#endif
 
-#ifndef WITH_CONTIKI
     debug("** retransmission #%d of transaction %d\n",
 	  node->retransmit_cnt, ntohs(node->pdu->hdr->id));
-#else /* WITH_CONTIKI */
-    debug("** retransmission #%u of transaction %u\n",
-	  node->retransmit_cnt, uip_ntohs(node->pdu->hdr->id));
-#endif /* WITH_CONTIKI */
 
     node->id = coap_send_impl(context, node->local_if, 
 			      &node->remote, node->pdu);
@@ -556,14 +757,6 @@ coap_retransmit(coap_context_t *context, coap_queue_t *node) {
   /* And finally delete the node */
   coap_delete_node( node );
   return COAP_INVALID_TID;
-}
-
-int
-_order_transaction_id( coap_queue_t *lhs, coap_queue_t *rhs ) {
-  return ( lhs && rhs && lhs->pdu && rhs->pdu &&
-	   ( lhs->id < rhs->id ) )
-    ? -1
-    : 1;
 }
 
 /** 
@@ -624,7 +817,6 @@ if (!coap_pdu_parse(msg, msg_len, node->pdu)) {
 
   /* and add new node to receive queue */
   coap_transaction_id(&node->remote, node->pdu, &node->id);
-  /* coap_insert_node(&ctx->recvqueue, node, _order_timestamp); */
 
 #ifndef NDEBUG
   if (LOG_DEBUG <= coap_get_log_level()) {
@@ -642,9 +834,17 @@ if (!coap_pdu_parse(msg, msg_len, node->pdu)) {
 
   coap_dispatch(ctx, node);
   return 0;
+
  error:
   /* FIXME: send back RST? */
   coap_delete_node(node);
+  return -1;
+ error_early:
+#ifdef WITH_LWIP
+  /* even if there was an error, clean up */
+  pbuf_free(ctx->pending_package);
+  ctx->pending_package = NULL;
+#endif
   return -1;
 }
 
@@ -660,6 +860,9 @@ coap_remove_from_queue(coap_queue_t **queue, coap_tid_t id, coap_queue_t **node)
   if ( id == (*queue)->id ) { /* found transaction */
     *node = *queue;
     *queue = (*queue)->next;
+    if (*queue) {	  /* adjust relative time of new queue head */
+      (*queue)->t += (*node)->t;
+    }
     (*node)->next = NULL;
     /* coap_delete_node( q ); */
     debug("*** removed transaction %u\n", id);
@@ -675,6 +878,9 @@ coap_remove_from_queue(coap_queue_t **queue, coap_tid_t id, coap_queue_t **node)
 
   if ( q ) {			/* found transaction */
     p->next = q->next;
+    if (p->next) {		/* must update relative time of p->next */
+      p->next->t += q->t;
+    }
     q->next = NULL;
     *node = q;
     /* coap_delete_node( q ); */
@@ -834,12 +1040,39 @@ coap_new_error_response(coap_pdu_t *request, unsigned char code,
   return response;
 }
 
+/**
+ * Quick hack to determine the size of the resource description for
+ * .well-known/core.
+ */
+static inline size_t
+get_wkc_len(coap_context_t *context, coap_opt_t *query_filter) {
+  unsigned char buf[1];
+  size_t len = 0;
+
+  if (print_wellknown(context, buf, &len, UINT_MAX, query_filter)
+      & COAP_PRINT_STATUS_ERROR) {
+    warn("cannot determine length of /.well-known/core\n");
+    return 0;
+  }
+
+  debug("get_wkc_len: print_wellknown() returned %zu\n", len);
+
+  return len;
+}
+
+#define SZX_TO_BYTES(SZX) ((size_t)(1 << ((SZX) + 4)))
+
 coap_pdu_t *
 wellknown_response(coap_context_t *context, coap_pdu_t *request) {
   coap_pdu_t *resp;
   coap_opt_iterator_t opt_iter;
-  size_t len;
+  size_t len, wkc_len;
   unsigned char buf[2];
+  int result = 0;
+  int need_block2 = 0;	   /* set to 1 if Block2 option is required */
+  coap_block_t block;
+  coap_opt_t *query_filter;
+  size_t offset = 0;
 
   resp = coap_pdu_init(request->hdr->type == COAP_MESSAGE_CON 
 		       ? COAP_MESSAGE_ACK 
@@ -854,6 +1087,23 @@ wellknown_response(coap_context_t *context, coap_pdu_t *request) {
   if (!coap_add_token(resp, request->hdr->token_length, request->hdr->token)) {
     debug("wellknown_response: cannot add token\n");
     goto error;
+  }
+
+  query_filter = coap_check_option(request, COAP_OPTION_URI_QUERY, &opt_iter);
+  wkc_len = get_wkc_len(context, query_filter);
+
+  /* check whether the request contains the Block2 option */
+  if (coap_get_block(request, COAP_OPTION_BLOCK2, &block)) {
+    offset = block.num << (block.szx + 4);
+    if (block.szx > 6) {  /* invalid, MUST lead to 4.00 Bad Request */
+      resp->hdr->code = COAP_RESPONSE_CODE(400);
+      return resp;
+    } else if (block.szx > COAP_MAX_BLOCK_SZX) {
+      block.szx = COAP_MAX_BLOCK_SZX;
+      block.num = offset >> (block.szx + 4);
+    }
+
+    need_block2 = 1;
   }
 
   /* Check if there is sufficient space to add Content-Format option 
@@ -873,6 +1123,34 @@ wellknown_response(coap_context_t *context, coap_pdu_t *request) {
 		  coap_encode_var_bytes(buf, 
 			COAP_MEDIATYPE_APPLICATION_LINK_FORMAT), buf);
 
+  /* check if Block2 option is required even if not requested */
+  if (!need_block2 && (resp->max_size - (size_t)resp->length < wkc_len)) {
+    assert(resp->length <= resp->max_size);
+    const size_t payloadlen = resp->max_size - resp->length;
+    /* yes, need block-wise transfer */
+    block.num = 0;
+    block.m = 0;      /* the M bit is set by coap_write_block_opt() */
+    block.szx = COAP_MAX_BLOCK_SZX;
+    while (payloadlen < SZX_TO_BYTES(block.szx)) {
+      if (block.szx == 0) {
+	debug("wellknown_response: message to small even for szx == 0\n");
+	goto error;
+      } else {
+	block.szx--;
+      }
+    }
+
+    need_block2 = 1;
+  }
+
+  /* write Block2 option if necessary */
+  if (need_block2) {
+    if (coap_write_block_opt(&block, COAP_OPTION_BLOCK2, resp, wkc_len) < 0) {
+      debug("wellknown_response: cannot add Block2 option\n");
+      goto error;
+    }
+  }
+
   /* Manually set payload of response to let print_wellknown() write,
    * into our buffer without copying data. */
 
@@ -880,15 +1158,15 @@ wellknown_response(coap_context_t *context, coap_pdu_t *request) {
   *resp->data = COAP_PAYLOAD_START;
   resp->data++;
   resp->length++;
-  len = resp->max_size - resp->length;
+  len = need_block2 ? SZX_TO_BYTES(block.szx) : resp->max_size - resp->length;
 
-  if (!print_wellknown(context, resp->data, &len,
-	       coap_check_option(request, COAP_OPTION_URI_QUERY, &opt_iter))) {
+  result = print_wellknown(context, resp->data, &len, offset, query_filter);
+  if ((result & COAP_PRINT_STATUS_ERROR) != 0) {
     debug("print_wellknown failed\n");
     goto error;
   } 
   
-  resp->length += len;
+  resp->length += COAP_PRINT_OUTPUT_LENGTH(result);
   return resp;
 
  error:
@@ -1040,7 +1318,10 @@ handle_locally(coap_context_t *context, coap_queue_t *node) {
 static void
 coap_handle_rst(coap_context_t *context, const coap_queue_t *sent) {
 #ifndef WITHOUT_OBSERVE
-  coap_resource_t *r, *tmp;
+  coap_resource_t *r;
+#ifndef COAP_RESOURCES_NOHASH
+  coap_resource_t *tmp;
+#endif
   str token = { 0, NULL };
 
   /* remove observer for this resource, if any 
@@ -1050,7 +1331,11 @@ coap_handle_rst(coap_context_t *context, const coap_queue_t *sent) {
   COAP_SET_STR(&token, sent->pdu->hdr->token_length, sent->pdu->hdr->token);
 
 #ifndef WITH_CONTIKI
+#ifdef COAP_RESOURCES_NOHASH
+  LL_FOREACH(context->resources, r) {
+#else
   HASH_ITER(hh, context->resources, r, tmp) {
+#endif
     coap_delete_observer(r, &sent->remote, &token);
     coap_cancel_all_messages(context, &sent->remote, token.s, token.length);
   }
@@ -1114,11 +1399,9 @@ coap_dispatch(coap_context_t *context, coap_queue_t *rcvd) {
        * not only the transaction but also the subscriptions we might
        * have. */
 
-#ifndef WITH_CONTIKI
       coap_log(LOG_ALERT, "got RST for message %u\n", ntohs(rcvd->pdu->hdr->id));
-#else /* WITH_CONTIKI */
-      coap_log(LOG_ALERT, "got RST for message %u\n", uip_ntohs(rcvd->pdu->hdr->id));
-#endif /* WITH_CONTIKI */
+
+      /* find transaction in sendqueue to stop retransmission */
       coap_remove_from_queue(&context->sendqueue, rcvd->id, &sent);
 
       if (sent)
@@ -1225,3 +1508,86 @@ PROCESS_THREAD(coap_retransmit_process, ev, data)
 /*---------------------------------------------------------------------------*/
 
 #endif /* WITH_CONTIKI */
+
+#ifdef WITH_LWIP
+/* FIXME: retransmits that are not required any more due to incoming packages
+ * do *not* get cleared at the moment, the wakeup when the transmission is due
+ * is silently accepted. this is mainly due to the fact that the required
+ * checks are similar in two places in the code (when receiving ACK and RST)
+ * and that they cause more than one patch chunk, as it must be first checked
+ * whether the sendqueue item to be dropped is the next one pending, and later
+ * the restart function has to be called. nothing insurmountable, but it can
+ * also be implemented when things have stabilized, and the performance
+ * penality is minimal
+ *
+ * also, this completely ignores COAP_RESOURCE_CHECK_TIME.
+ * */
+
+static void coap_retransmittimer_execute(void *arg)
+{
+	coap_context_t *ctx = (coap_context_t*)arg;
+	coap_tick_t now;
+	coap_tick_t elapsed;
+	coap_queue_t *nextinqueue;
+
+	ctx->timer_configured = 0;
+
+	coap_ticks(&now);
+
+	elapsed = now - ctx->sendqueue_basetime; /* that's positive for sure, and unless we haven't been called for a complete wrapping cycle, did not wrap */
+
+	nextinqueue = coap_peek_next(ctx);
+	while (nextinqueue != NULL)
+	{
+		if (nextinqueue->t > elapsed) {
+			nextinqueue->t -= elapsed;
+			break;
+		} else {
+			elapsed -= nextinqueue->t;
+			coap_retransmit(ctx, coap_pop_next(ctx));
+			nextinqueue = coap_peek_next(ctx);
+		}
+	}
+
+	ctx->sendqueue_basetime = now;
+
+	coap_retransmittimer_restart(ctx);
+}
+
+static void coap_retransmittimer_restart(coap_context_t *ctx)
+{
+	coap_tick_t now, elapsed, delay;
+
+	if (ctx->timer_configured)
+	{
+		printf("clearing\n");
+		sys_untimeout(coap_retransmittimer_execute, (void*)ctx);
+		ctx->timer_configured = 0;
+	}
+	if (ctx->sendqueue != NULL)
+	{
+		coap_ticks(&now);
+		elapsed = now - ctx->sendqueue_basetime;
+		if (ctx->sendqueue->t >= elapsed) {
+			delay = ctx->sendqueue->t - elapsed;
+		} else {
+			/* a strange situation, but not completely impossible.
+			 *
+			 * this happens, for example, right after
+			 * coap_retransmittimer_execute, when a retransmission
+			 * was *just not yet* due, and the clock ticked before
+			 * our coap_ticks was called.
+			 *
+			 * not trying to retransmit anything now, as it might
+			 * cause uncontrollable recursion; let's just try again
+			 * with the next main loop run.
+			 * */
+			delay = 0;
+		}
+
+		printf("scheduling for %d ticks\n", delay);
+		sys_timeout(delay, coap_retransmittimer_execute, (void*)ctx);
+		ctx->timer_configured = 1;
+	}
+}
+#endif

@@ -1,6 +1,6 @@
 /* net.h -- CoAP network interface
  *
- * Copyright (C) 2010,2011 Olaf Bergmann <bergmann@tzi.org>
+ * Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>
  *
  * This file is part of the CoAP library libcoap. Please see
  * README for terms of use. 
@@ -8,6 +8,10 @@
 
 #ifndef _COAP_NET_H_
 #define _COAP_NET_H_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #include "config.h"
 
@@ -34,6 +38,10 @@
 
 #include "t_list.h"
 
+#ifdef WITH_LWIP
+#include <lwip/ip_addr.h>
+#endif
+
 #include "option.h"
 #include "coap_io.h"
 #include "prng.h"
@@ -45,9 +53,9 @@ struct coap_queue_t;
 typedef struct coap_queue_t {
   struct coap_queue_t *next;
 
-  coap_tick_t t;	        /* when to send PDU for the next time */
-  unsigned char retransmit_cnt;	/* retransmission counter, will be removed when zero */
-  unsigned int timeout;		/* the randomized timeout value */
+  coap_tick_t t;	        /**< when to send PDU for the next time */
+  unsigned char retransmit_cnt;	/**< retransmission counter, will be removed when zero */
+  unsigned int timeout;		/**< the randomized timeout value */
 
 #if 0
   int local_if_handle;		/**< handle for local interface */
@@ -60,16 +68,16 @@ typedef struct coap_queue_t {
   coap_pdu_t *pdu;		/**< the CoAP PDU to send */
 } coap_queue_t;
 
-/* adds node to given queue, ordered by node->t */
+/** Adds node to given queue, ordered by node->t. */
 int coap_insert_node(coap_queue_t **queue, coap_queue_t *node);
 
-/* destroys specified node */
+/** Destroys specified node. */
 int coap_delete_node(coap_queue_t *node);
 
-/* removes all items from given queue and frees the allocated storage */
+/** Removes all items from given queue and frees the allocated storage. */
 void coap_delete_all(coap_queue_t *queue);
 
-/* creates a new node suitable for adding to the CoAP sendqueue */
+/** Creates a new node suitable for adding to the CoAP sendqueue. */
 coap_queue_t *coap_new_node();
 
 struct coap_resource_t;
@@ -96,7 +104,7 @@ typedef struct {
 typedef struct coap_context_t {
   coap_opt_filter_t known_options;
 #ifndef WITH_CONTIKI
-  struct coap_resource_t *resources; /**< hash table of known resources */
+  struct coap_resource_t *resources; /**< hash table or list of known resources */
 #endif /* WITH_CONTIKI */
 #ifndef WITHOUT_ASYNC
   /** list of asynchronous transactions */
@@ -107,11 +115,23 @@ typedef struct coap_context_t {
    * to sendqueue_basetime. */
   coap_tick_t sendqueue_basetime;
   coap_queue_t *sendqueue, *recvqueue;
-
+#if WITH_POSIX
+  int sockfd;			/**< send/receive socket */
+#endif /* WITH_POSIX */
 #ifdef WITH_CONTIKI
+  struct uip_udp_conn *conn;	/**< uIP connection object */
+  
   struct etimer retransmit_timer; /**< fires when the next packet must be sent */
   struct etimer notify_timer;     /**< used to check resources periodically */
 #endif /* WITH_CONTIKI */
+#ifdef WITH_LWIP
+  struct udp_pcb *pcb; /**< the underlying lwIP UDP PCB */
+  struct pbuf *pending_package; /**< pbuf containing the last received package if not handled yet. This is only used to pass the package from the udp_recv callback into the coap_read function, which frees the pbuf and clears this field. */
+  ip_addr_t pending_address; /**< the address associated with pending_package */
+  u16_t pending_port; /**< the port associated with pending_package */
+
+  uint8_t timer_configured; /**< Set to 1 when a retransmission is scheduled using lwIP timers for this context, otherwise 0. */
+#endif /* WITH_LWIP */
 
   /**
    * The last message id that was used is stored in this field.  The
@@ -175,10 +195,18 @@ coap_register_option(coap_context_t *ctx, unsigned char type) {
   coap_option_setb(ctx->known_options, type);
 }
 
-/* Returns the next pdu to send without removing from sendqeue. */
+
+/**
+ * Set sendqueue_basetime in the given context object @p ctx to @p
+ * now. This function returns the number of elements in the queue
+ * head that have timed out.
+ */
+unsigned int coap_adjust_basetime(coap_context_t *ctx, coap_tick_t now);
+
+/** Returns the next pdu to send without removing from sendqeue. */
 coap_queue_t *coap_peek_next( coap_context_t *context );
 
-/* Returns the next pdu to send and removes it from the sendqeue. */
+/** Returns the next pdu to send and removes it from the sendqeue. */
 coap_queue_t *coap_pop_next( coap_context_t *context );
 
 /* Creates a new coap_context_t object that will hold the CoAP stack status.  */
@@ -517,5 +545,9 @@ void coap_ticks(coap_tick_t *);
 int coap_option_check_critical(coap_context_t *ctx, 
 			       coap_pdu_t *pdu,
 			       coap_opt_filter_t unknown);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _COAP_NET_H_ */

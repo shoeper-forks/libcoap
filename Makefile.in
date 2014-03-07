@@ -1,9 +1,9 @@
 # Makefile for libcoap
 #
-# Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>
+# Copyright (C) 2010--2014 Olaf Bergmann <bergmann@tzi.org>
 #
 # This file is part of the CoAP library libcoap. Please see
-# README for terms of use. 
+# README for terms of use.
 
 # the library's version
 VERSION:=@PACKAGE_VERSION@
@@ -18,6 +18,9 @@ ETAGS = @ETAGS@
 abs_builddir = @abs_builddir@
 top_builddir = @top_builddir@
 package = @PACKAGE_TARNAME@-@PACKAGE_VERSION@
+prefix = @prefix@
+includerootdir = $(DESTDIR)$(prefix)/include
+librootdir = $(DESTDIR)$(prefix)/lib
 
 # files and flags
 SOURCES:= pdu.c net.c debug.c encode.c uri.c coap_list.c resource.c hashkey.c \
@@ -29,7 +32,7 @@ HEADERS:=coap.h config.h debug.h pdu.h net.h encode.h uri.h coap_list.h mem.h \
 CFLAGS:=-Wall -Wextra -std=c99 -pedantic @CFLAGS@
 CPPFLAGS:=@CPPFLAGS@
 DISTDIR=$(top_builddir)/$(package)
-SUBDIRS:=examples doc @TESTS@ dcaf
+SUBDIRS:=examples doc tests dcaf
 FILES:=ChangeLog README LICENSE.BSD LICENSE.GPL Makefile.in configure configure.in config.h.in $(SOURCES) $(HEADERS)
 LIB:=libcoap.a
 LDSOFLAGS=-shared
@@ -66,7 +69,7 @@ endif
 
 all:	$(LIB) $(LIBSO) dirs
 
-check:	
+check:
 	echo DISTDIR: $(DISTDIR)
 	echo top_builddir: $(top_builddir)
 	$(MAKE) -C examples check
@@ -77,7 +80,7 @@ dirs:	$(SUBDIRS)
 	done
 
 $(LIB):	$(OBJECTS)
-	$(AR) $(ARFLAGS) $@ $^ 
+	$(AR) $(ARFLAGS) $@ $^
 	$(RANLIB) $@
 
 $(LIBSO):	$(OBJECTS)
@@ -89,7 +92,7 @@ clean:
 		$(MAKE) -C $$dir clean ; \
 	done
 
-doc:	
+doc:
 	$(MAKE) -C doc
 
 distclean:	clean
@@ -104,9 +107,19 @@ dist:	$(FILES) $(SUBDIRS)
 	done
 	tar czf $(package).tar.gz $(DISTDIR)
 
-TAGS:	
-	$(ETAGS) -o $@.new $(SOURCES) 
-	$(ETAGS) -a -o $@.new $(HEADERS) 
+install:
+	test -d $(includerootdir)/libcoap || mkdir -p $(includerootdir)/libcoap
+	test -d $(librootdir) || mkdir -p $(librootdir)
+	cp -r $(HEADERS) $(includerootdir)/libcoap/
+	cp $(LIB) $(librootdir)/
+ifdef BUILD_SO
+	cp $(LIBSO) $(librootdir)/$(LIBSO).@LIBSO_VERSION@
+	test -h $(librootdir)/$(LIBSO) || ln -s $(librootdir)/$(LIBSO).@LIBSO_VERSION@ $(librootdir)/$(LIBSO)
+endif
+
+TAGS:
+	$(ETAGS) -o $@.new $(SOURCES)
+	$(ETAGS) -a -o $@.new $(HEADERS)
 	mv $@.new $@
 
 .gitignore:

@@ -392,7 +392,7 @@ main(int argc, char **argv) {
   char addr_str[NI_MAXHOST] = "::";
   char port_str[NI_MAXSERV] = "5683";
   int opt;
-  coap_log_t log_level = LOG_WARN;
+  coap_log_t log_level = LOG_WARNING;
 
   while ((opt = getopt(argc, argv, "A:p:v:")) != -1) {
     switch (opt) {
@@ -436,15 +436,15 @@ main(int argc, char **argv) {
     nextpdu = coap_peek_next( ctx );
 
     coap_ticks(&now);
-    while ( nextpdu && nextpdu->t <= now ) {
+    while (nextpdu && nextpdu->t <= now - ctx->sendqueue_basetime) {
       coap_retransmit( ctx, coap_pop_next( ctx ) );
       nextpdu = coap_peek_next( ctx );
     }
 
-    if ( nextpdu && nextpdu->t <= now + COAP_RESOURCE_CHECK_TIME ) {
+    if ( nextpdu && nextpdu->t <= COAP_RESOURCE_CHECK_TIME ) {
       /* set timeout if there is a pdu to send before our automatic timeout occurs */
-      tv.tv_usec = ((nextpdu->t - now) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
-      tv.tv_sec = (nextpdu->t - now) / COAP_TICKS_PER_SECOND;
+      tv.tv_usec = ((nextpdu->t) % COAP_TICKS_PER_SECOND) * 1000000 / COAP_TICKS_PER_SECOND;
+      tv.tv_sec = (nextpdu->t) / COAP_TICKS_PER_SECOND;
       timeout = &tv;
     } else {
       tv.tv_usec = 0;

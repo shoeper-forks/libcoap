@@ -212,7 +212,7 @@ main(int argc, char **argv) {
   coap_application_t *app;
   coap_endpoint_t *nosec_interface, *dtls_interface;
   coap_address_t listen_addr;
-  coap_log_t log_level = LOG_WARN;
+  coap_log_t log_level = LOG_WARNING;
   dcaf_context_t dcaf_context;
   int result = EXIT_FAILURE;
   int opt;

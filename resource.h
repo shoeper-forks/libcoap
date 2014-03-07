@@ -1,6 +1,6 @@
 /* resource.h -- generic resource handling
  *
- * Copyright (C) 2010,2011 Olaf Bergmann <bergmann@tzi.org>
+ * Copyright (C) 2010,2011,2014 Olaf Bergmann <bergmann@tzi.org>
  *
  * This file is part of the CoAP library libcoap. Please see
  * README for terms of use. 
@@ -27,11 +27,19 @@
 #endif /* COAP_RESOURCE_CHECK_TIME */
 
 #ifndef WITH_CONTIKI
-# ifdef HAVE_LIBTINYDTLS
-#  include <tinydtls/uthash.h>
-# else
-#  include "uthash.h"
-# endif /* HAVE_LIBTINYDTLS */
+# ifdef COAP_RESOURCES_NOHASH
+#  ifdef HAVE_LIBTINYDTLS
+#    include <tinydtls/uthash.h>
+#  else
+#    include "uthash.h"
+#  endif /* HAVE_LIBTINYDTLS */
+# else /* COAP_RESOURCES_NOHASH */
+#  ifdef HAVE_LIBTINYDTLS
+#    include <tinydtls/utlist.h>
+#  else
+#    include "utlist.h"
+#  endif /* HAVE_LIBTINYDTLS */
+# endif /* COAP_RESOURCES_NOHASH */
 #endif /* WITH_CONTIKI */
 #include "hashkey.h"
 #include "async.h"
@@ -59,6 +67,7 @@ typedef struct coap_attr_t {
 
 typedef struct coap_resource_t {
   unsigned int dirty:1;	      /**< set to 1 if resource has changed */
+  unsigned int partiallydirty:1; /**< set to 1 if some subscribers have not yet been notified of the last change */
   unsigned int observable:1; /**< can be observed */
   unsigned int cacheable:1;   /**< can be cached */
 
@@ -73,7 +82,14 @@ typedef struct coap_resource_t {
   coap_key_t key;	/**< the actual key bytes for this resource */
 
 #ifndef WITH_CONTIKI
+#ifdef COAP_RESOURCES_NOHASH
+  struct coap_resource_t *next;
+#else
   UT_hash_handle hh;
+#endif
+#endif /* WITH_CONTIKI */
+
+#ifndef WITH_CONTIKI
   coap_attr_t *link_attr; /**< attributes to be included with the link format */
 #else /* WITH_CONTIKI */
   LIST_STRUCT(link_attr); /**< attributes to be included with the link format */
@@ -164,6 +180,23 @@ coap_attr_t *coap_find_attr(coap_resource_t *resource,
  */
 void coap_delete_attr(coap_attr_t *attr);
 
+/**
+ * Status word to encode the result of conditional print or copy
+ * operations such as coap_print_link(). The lower 28 bits of
+ * coap_print_status_t are used to encode the number of characters
+ * that has actually been printed, bits 28 to 31 encode the status.
+ * When COAP_PRINT_STATUS_ERROR is set, an error occurred during
+ * output. In this case, the other bits are undefined.
+ * COAP_PRINT_STATUS_TRUNC indicates that the output is truncated,
+ * i.e. the printing would have exceeded the current buffer.
+ */
+typedef unsigned int coap_print_status_t;
+
+#define COAP_PRINT_STATUS_MASK  0xF0000000u
+#define COAP_PRINT_OUTPUT_LENGTH(v) ((v) & ~COAP_PRINT_STATUS_MASK)
+#define COAP_PRINT_STATUS_ERROR 0x80000000u
+#define COAP_PRINT_STATUS_TRUNC 0x40000000u
+
 /** 
  * Writes a description of this resource in link-format to given text
  * buffer. @p len must be initialized to the maximum length of @p buf
@@ -174,13 +207,20 @@ void coap_delete_attr(coap_attr_t *attr);
  * @param resource The resource to describe.
  * @param buf      The output buffer to write the description to.
  * @param len      Must be initialized to the length of @p buf and 
- * will be set to the number of characters written on success.
+ *                 will be set to the length of the printed link description.
+ * @param offset   The offset within the resource description where to
+ *                 start writing into @p buf. This is useful for dealing
+ *                 with the Block2 option. @p offset is updated during
+ *                 output as it is consumed.
  * 
- * @return @c 1 on success, or @c 0 on error. If @c 0, @p len is
- * undefined.
+ * @return If COAP_PRINT_STATUS_ERROR is set, an error occured. Otherwise,
+ *         the lower 28 bits will indicate the number of characters that
+ *         have actually been output into @p buffer. The flag
+ *         COAP_PRINT_STATUS_TRUNC indicates that the output has been
+ *         truncated. 
  */
-int coap_print_link(const coap_resource_t *resource, 
-		    unsigned char *buf, size_t *len);
+coap_print_status_t coap_print_link(const coap_resource_t *resource, 
+		    unsigned char *buf, size_t *len, size_t *offset);
 
 /** 
  * Registers the specified @p handler as message handler for the request type
