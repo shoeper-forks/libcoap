@@ -1179,8 +1179,10 @@ static dtls_handler_t cb = {
   .read  = dtls_application_data,
   .event = NULL,
   .get_psk_key = get_psk_key,
+#ifdef WITH_ECC
   .get_ecdsa_key = NULL,
   .verify_ecdsa_key = NULL
+#endif
 };
 
 ssize_t
