@@ -98,12 +98,12 @@ coap_new_endpoint(const coap_address_t *addr, int flags) {
   struct coap_endpoint_t *ep;
 
   if (sockfd < 0) {
-    coap_log(LOG_WARN, "coap_new_endpoint: socket");
+    coap_log(LOG_WARNING, "coap_new_endpoint: socket");
     return NULL;
   }
 
   if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
-    coap_log(LOG_WARN, "coap_new_endpoint: setsockopt SO_REUSEADDR");
+    coap_log(LOG_WARNING, "coap_new_endpoint: setsockopt SO_REUSEADDR");
 
   on = 1;
   switch(addr->addr.sa.sa_family) {
@@ -125,14 +125,14 @@ coap_new_endpoint(const coap_address_t *addr, int flags) {
   }
 
   if (bind(sockfd, &addr->addr.sa, addr->size) < 0) {
-    coap_log(LOG_WARN, "coap_new_endpoint: bind");
+    coap_log(LOG_WARNING, "coap_new_endpoint: bind");
     close (sockfd);
     return NULL;
   }
 
   ep = coap_malloc_posix_endpoint();
   if (!ep) {
-    coap_log(LOG_WARN, "coap_new_endpoint: malloc");
+    coap_log(LOG_WARNING, "coap_new_endpoint: malloc");
     close(sockfd);
     return NULL;
   }
@@ -265,7 +265,7 @@ coap_network_send(struct coap_context_t *context UNUSED_PARAM,
   }
   default:
     /* error */
-    coap_log(LOG_WARN, "protocol not supported\n");
+    coap_log(LOG_WARNING, "protocol not supported\n");
     return -1;
   }
 

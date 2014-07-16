@@ -8,6 +8,8 @@
 
 #include "config.h"
 
+#include <tinydtls/tinydtls.h>
+
 #include <errno.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -117,10 +119,17 @@ get_psk_key(struct dtls_context_t *ctx,
   return 0;
 }
 
+static int 
+dtls_event(struct dtls_context_t *ctx, session_t *session, 
+	   dtls_alert_level_t level, unsigned short code) {
+  debug("got event %x\n", code);
+  return 0;
+}
+
 static dtls_handler_t cb = {
   .write = dtls_send_to_peer,
   .read  = dtls_application_data,
-  .event = NULL,
+  .event = dtls_event,
   .get_psk_key = get_psk_key,
   .get_ecdsa_key = NULL,
   .verify_ecdsa_key = NULL
@@ -394,7 +403,7 @@ coap_application_attach(coap_application_t *application,
   ep_item = (struct list_ep_t *)coap_malloc(sizeof(struct list_ep_t));
 
   if (ep_item) {
-    memset(ep_item, 0, sizeof(ep_item));
+    memset(ep_item, 0, sizeof(struct list_ep_t));
     ep_item->ep = endpoint;
     LIST_STRUCT_INIT(ep_item, sendqueue);  
     list_add(application->endpoints, ep_item);

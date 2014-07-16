@@ -35,7 +35,7 @@
 #include "net/uip-debug.h"
 #endif
 
-static coap_log_t maxlog = LOG_WARN;	/* default maximum log level */
+static coap_log_t maxlog = LOG_WARNING;	/* default maximum log level */
 
 coap_log_t 
 coap_get_log_level() {
@@ -49,7 +49,7 @@ coap_set_log_level(coap_log_t level) {
 
 /* this array has the same order as the type log_t */
 static char *loglevels[] = {
-  "EMRG", "ALRT", "CRIT", "WARN", "NOTE", "INFO", "DEBG" 
+  "EMRG", "ALRT", "CRIT", "ERR", "WARN", "NOTE", "INFO", "DEBG" 
 };
 
 #ifdef HAVE_TIME_H
@@ -137,7 +137,7 @@ print_readable( const unsigned char *data, unsigned int len,
 #endif
 
 size_t
-coap_print_addr(const struct __coap_address_t *addr, unsigned char *buf, size_t len) {
+coap_print_addr(const struct coap_address_t *addr, unsigned char *buf, size_t len) {
 #ifdef HAVE_ARPA_INET_H
   const void *addrptr = NULL;
   in_port_t port;
@@ -192,14 +192,16 @@ coap_print_addr(const struct __coap_address_t *addr, unsigned char *buf, size_t 
 
   *p++ = '[';
 
-  for (i=0; i < 8; i += 4) {
-    *p++ = hex[(addr->addr.u16[i] & 0xf000) >> 24];
-    *p++ = hex[(addr->addr.u16[i] & 0x0f00) >> 16];
-    *p++ = hex[(addr->addr.u16[i] & 0x00f0) >> 8];
-    *p++ = hex[(addr->addr.u16[i] & 0x000f)];
-    *p++ = ':';
+  for (i=0; i < 16; i += 2) {
+    if (i) {
+      *p++ = ':';
+    }
+    *p++ = hex[(addr->addr.u8[i] & 0xf0) >> 4];
+    *p++ = hex[(addr->addr.u8[i] & 0x0f)];
+    *p++ = hex[(addr->addr.u8[i+1] & 0xf0) >> 4];
+    *p++ = hex[(addr->addr.u8[i+1] & 0x0f)];
   }
-  *(p-1) = ']';
+  *p++ = ']';
 #  else /* WITH_UIP6 */
 #   warning "IPv4 network addresses will not be included in debug output"
 
@@ -215,7 +217,7 @@ coap_print_addr(const struct __coap_address_t *addr, unsigned char *buf, size_t 
   /* @todo manual conversion of port number */
 #endif /* HAVE_SNPRINTF */
 
-  return buf + len - p;
+  return p - buf;
 # else /* WITH_CONTIKI */
   /* TODO: output addresses manually */
 #   warning "inet_ntop() not available, network addresses will not be included in debug output"
