@@ -1,6 +1,7 @@
 # Makefile for libcoap
 #
-# Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>
+# Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>,
+#                          Stefanie Gerdes <gerdes@tzi.org>
 #
 # This file is part of the CoAP library libcoap. Please see
 # README for terms of use. 
@@ -17,8 +18,8 @@ abs_builddir = @abs_builddir@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 # files and flags
-PROGRAMS:=dcaf-client as rs
-SOURCES:= dcaf-client.c address.c as.c rs.c
+PROGRAMS:=dcaf-client am rs
+SOURCES:= dcaf-client.c address.c am.c rs.c
 OBJECTS:= $(patsubst %.c, %.o, $(SOURCES))
 #CFLAGS:=-g -Wall -ansi -pedantic -I..
 CFLAGS:=-g -Wall @CFLAGS@
@@ -41,8 +42,12 @@ check:
 	echo top_builddir: $(top_builddir)
 
 dcaf-client: $(libcoap)
-dcaf-client: dcaf-client.o address.o
+dcaf-client: dcaf-client.o address.o common.o
 	$(CC) -o $@ $^ $(LDFLAGS) $(LDLIBS)
+
+am: $(libcoap)
+am: am.o address.o
+	$(CC) -o $@ $^ $(LDFLAGS) $(LDLIBS) -ljson-c
 
 clean:
 	@rm -f $(PROGRAMS) $(OBJECTS)

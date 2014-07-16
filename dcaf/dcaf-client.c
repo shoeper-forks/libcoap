@@ -1,7 +1,8 @@
 /* dcaf-client.c -- simple client for the DCAF protocol
  *                  draft-gerdes-core-dcaf-authorize-00
  *
- * Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>
+ * Copyright (C) 2010--2013 Olaf Bergmann <bergmann@tzi.org>,
+ *                          Stefanie Gerdes <gerdes@tzi.org>
  *
  * This file is part of the CoAP library libcoap. Please see
  * README for terms of use. 
@@ -17,6 +18,7 @@
 
 #include "debug.h"
 #include "coap.h"
+#include "common.h"
 
 #if HAVE_LIBTINYDTLS
 /* The following definitions are required because we cannot include
@@ -25,11 +27,11 @@ typedef coap_log_t log_t;
 extern void dtls_set_log_level(log_t level);
 
 typedef struct dcaf_context_t {
-  coap_uri_t ap_uri;		/**< URI of our authentication proxy */
+  coap_uri_t am_uri;		/**< URI of our authentication proxy */
   coap_uri_t rs_uri;		/**< the RS to talk to */
 } dcaf_context_t;
 
-char DEFAULT_AP_URI[] = "coaps://localhost:7770/auth";
+char DEFAULT_AM_URI[] = "coaps://localhost:7770/auth";
 
 #define COAP_APPLICATION_SEND_SECURE 0x01
 
@@ -40,56 +42,6 @@ const unsigned short myport = 0;
 const unsigned short myport_secure = 0;
 
 void usage(const char *program, const char *version);
-
-coap_pdu_t *
-create_request(coap_application_t *application, unsigned char type, 
-	       unsigned char code, coap_uri_t *r_uri,
-	       size_t data_len, unsigned char *data) {
-  coap_pdu_t *pdu;
-#define BUFSIZE 256
-  unsigned char _buf[BUFSIZE];
-  unsigned char *buf = _buf;
-  size_t buflen;
-  int res;
-
-  pdu = coap_pdu_init(type, code, 
-		      coap_new_message_id(application->coap_context),
-		      COAP_MAX_PDU_SIZE);
-
-  if (!pdu)
-    return NULL;
-
-  if (r_uri->path.length) {
-    buflen = BUFSIZE;
-    res = coap_split_path(r_uri->path.s, r_uri->path.length, buf, &buflen);
-
-    while (res--) {
-      coap_add_option(pdu, COAP_OPTION_URI_PATH, 
-		      coap_opt_length(buf), coap_opt_value(buf));
-      
-      buf += coap_opt_size(buf);      
-    }
-  }
-  
-  if (r_uri->query.length) {
-    buflen = BUFSIZE;
-    buf = _buf;
-    res = coap_split_query(r_uri->query.s, r_uri->query.length, buf, &buflen);
-
-    while (res--) {
-      coap_add_option(pdu, COAP_OPTION_URI_QUERY, 
-		      coap_opt_length(buf), coap_opt_value(buf));
-
-      buf += coap_opt_size(buf);      
-    }
-  }
-
-  if (data_len) {
-    coap_add_data(pdu, data_len, data);
-  }
-
-  return pdu;
-}
 
 void
 rs_response_handler(struct coap_context_t  *ctx, 
@@ -103,7 +55,7 @@ rs_response_handler(struct coap_context_t  *ctx,
 }
 
 void
-auth_reponse_handler(struct coap_context_t  *ctx, 
+auth_response_handler(struct coap_context_t  *ctx, 
 		     const coap_endpoint_t *local_interface, 
 		     const coap_address_t *remote, 
 		     coap_pdu_t *sent,
@@ -166,15 +118,17 @@ auth_reponse_handler(struct coap_context_t  *ctx,
 }
 
 int
-authorization_request(coap_application_t *application,
+access_request(coap_application_t *application,
 		      coap_endpoint_t *local_interface,
-		      coap_uri_t *ap_uri) {
+		      coap_uri_t *am_uri) {
   coap_address_t dst;
   coap_pdu_t *pdu;
+  unsigned char *request_data = (unsigned char*)"{\"AS\":\"coaps://[::1]:8090/author\",\"M\":[\"GET\"],\"R\":\"coaps://[::1]/.well-known/core\"}";
+  size_t data_len = 99;
 
-  /* retrieve destination address from ap_uri */
-  if (!coap_address_resolve(ap_uri->host.s, ap_uri->host.length,
-			    ap_uri->port, &dst)) {
+  /* retrieve destination address from am_uri */
+  if (!coap_address_resolve(am_uri->host.s, am_uri->host.length,
+			    am_uri->port, &dst)) {
     debug("cannot resolve address\n");
     return 0;
   }
@@ -187,22 +141,22 @@ authorization_request(coap_application_t *application,
     unsigned char addr[INET6_ADDRSTRLEN+8];
     
     if (coap_print_addr(&dst, addr, INET6_ADDRSTRLEN+8)) {
-      debug("ap address resolved to: %s \n", addr); 
+      debug("am address resolved to: %s \n", addr); 
     }
   }
 #endif
   /* create request PDU */
   pdu = create_request(application, COAP_MESSAGE_CON, 
-		       COAP_REQUEST_POST, ap_uri, 0, NULL);
+		       COAP_REQUEST_POST, am_uri, data_len, request_data);
   if (!pdu) {
-    coap_log(LOG_CRIT, "cannot create Authorization request\n");
+    coap_log(LOG_CRIT, "cannot create access request\n");
     return 0;
   }
     
   /* send message */
   return coap_application_send_request(application, local_interface, 
 				       &dst, pdu,
-				       auth_reponse_handler,
+				       auth_response_handler,
 				       COAP_APPLICATION_SEND_SECURE)
     >= 0;
 }
@@ -217,7 +171,7 @@ main(int argc, char **argv) {
   int result = EXIT_FAILURE;
   int opt;
 
-  while ((opt = getopt(argc, argv, "h:v:")) != -1) {
+  while ((opt = getopt(argc, argv, "hv:")) != -1) {
     switch (opt) {
     case 'v' :
       log_level = strtol(optarg, NULL, 10);
@@ -234,6 +188,8 @@ main(int argc, char **argv) {
   dtls_set_log_level(log_level);
 
   /* read as and rs uri */
+  /* AS uri will likely be obtained by either the AS Information
+     message or by a RD lookup. For now, it can be an argument */
   if (optind < argc) {
     coap_split_uri((unsigned char *)(argv[optind]), strlen(argv[optind]), 
 		   &dcaf_context.rs_uri);
@@ -245,11 +201,11 @@ main(int argc, char **argv) {
 
   if (optind < argc) {
     coap_split_uri((unsigned char *)(argv[optind]), strlen(argv[optind]), 
-		   &dcaf_context.ap_uri);
+		   &dcaf_context.am_uri);
   } else {
     /* use default AS uri */
-    coap_split_uri((unsigned char *)DEFAULT_AP_URI, strlen(DEFAULT_AP_URI), 
-		   &dcaf_context.ap_uri);
+    coap_split_uri((unsigned char *)DEFAULT_AM_URI, strlen(DEFAULT_AM_URI), 
+		   &dcaf_context.am_uri);
   }
 
   app = coap_new_application();
@@ -294,8 +250,8 @@ main(int argc, char **argv) {
       goto cleanup;
     }
 
-    if (!authorization_request(app, dtls_interface, &dcaf_context.ap_uri)) {
-      coap_log(LOG_CRIT, "sending authorization request failed\n");
+    if (!access_request(app, dtls_interface, &dcaf_context.am_uri)) {
+      coap_log(LOG_CRIT, "sending access request failed\n");
       goto cleanup;
     }
 
@@ -318,9 +274,9 @@ usage(const char *program, const char *version) {
 
   fprintf( stderr, "%s v%s -- DCAF protocol client\n"
 	   "(c) 2013 Olaf Bergmann <bergmann@tzi.org>\n\n"
-	   "usage: %s [-h] [-v num] URI [AP]\n\n"
+	   "usage: %s [-h] [-v num] URI [AM]\n\n"
 	   "\tURI must be an absolute coaps URI of the requested resource,\n"
-	   "\tAP is the absolute URI of your authorization proxy,\n"
+	   "\tAM is the absolute URI of your authentication manager,\n"
 	   "\t-h \t\tdisplay this help screen\n"
 	   "\t-v num\t\tverbosity level (default: 3)\n"
 	   "\n"
