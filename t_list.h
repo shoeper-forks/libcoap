@@ -32,8 +32,13 @@
 #define _DTLS_LIST_H_
 
 #ifndef WITH_CONTIKI
-#include "uthash.h"
-#include "utlist.h"
+#ifdef HAVE_LIBTINYDTLS
+# include <tinydtls/uthash.h>
+# include <tinydtls/utlist.h>
+#else /* HAVE_LIBTINYDTLS */
+# include "uthash.h"
+# include "utlist.h"
+#endif /* HAVE_LIBTINYDTLS */
 
 /* We define list structures and utility functions to be compatible
  * with Contiki list structures. The Contiki list API is part of the
@@ -91,44 +96,44 @@ struct list {
   }
 
 static inline void *
-list_head(list_t list) {
-  return *list;
+list_head(list_t the_list) {
+  return *the_list;
 }
 
 static inline void 
-list_remove(list_t list, void *item) {
-  if (list_head(list))
-    LL_DELETE(*(struct list **)list, (struct list *)item);
+list_remove(list_t the_list, void *item) {
+  if (list_head(the_list))
+    LL_DELETE(*(struct list **)the_list, (struct list *)item);
 }
 
 static inline void 
-list_add(list_t list, void *item) {
-  list_remove(list, item);
-  LL_APPEND(*(struct list **)list, (struct list *)item);
+list_add(list_t the_list, void *item) {
+  list_remove(the_list, item);
+  LL_APPEND(*(struct list **)the_list, (struct list *)item);
 }
 
 static inline void 
-list_push(list_t list, void *item) {
-  LL_PREPEND(*(struct list **)list, (struct list *)item);
+list_push(list_t the_list, void *item) {
+  LL_PREPEND(*(struct list **)the_list, (struct list *)item);
 }
 
 static inline void *
-list_pop(list_t list) {
+list_pop(list_t the_list) {
   struct list *l;
-  l = *list;
+  l = (struct list*)*the_list;
   if(l)
-    list_remove(list, l);
+    list_remove(the_list, l);
   
   return l;
 }
 
 static inline void
-list_insert(list_t list, void *previtem, void *newitem) {
+list_insert(list_t the_list, void *previtem, void *newitem) {
   if(previtem == NULL) {
-    list_push(list, newitem);
+    list_push(the_list, newitem);
   } else {
     ((struct list *)newitem)->next = ((struct list *)previtem)->next;
-    ((struct list *)previtem)->next = newitem;
+    ((struct list *)previtem)->next = (struct list*)newitem;
   } 
 }
 
