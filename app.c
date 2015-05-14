@@ -19,6 +19,14 @@
 #include "coap.h"
 #include "app.h"
 
+#ifndef NDEBUG
+/* Declare function from tinydtls/debug.h because we cannot include it
+ * directly. */
+void hexdump(const unsigned char *packet, int length);
+#else
+#define hexdump(...)
+#endif /* NDEBUG */
+
 struct network_data_item {
   struct network_data_item *next;
 
@@ -102,21 +110,50 @@ dtls_send_to_peer(struct dtls_context_t *dtls_context,
 /* This function is the "key store" for tinyDTLS. It is called to
  * retrieve a key for the given identity within this particular
  * session. */
-int
-get_psk_key(struct dtls_context_t *ctx, 
-	    const session_t *session, 
-	    const unsigned char *id, size_t id_len, 
-	    const dtls_psk_key_t **result) {
+static int
+get_psk_info(struct dtls_context_t *dtls_context,
+	     const session_t *session,
+	     dtls_credentials_type_t type,
+	     const unsigned char *id, size_t id_len,
+	     unsigned char *result, size_t result_length) {
 
-  static const dtls_psk_key_t psk = {
-    .id = (unsigned char *)"Client_identity", 
-    .id_length = 15,
-    .key = (unsigned char *)"secretPSK", 
-    .key_length = 9
-  };
-   
-  *result = &psk;
-  return 0;
+  coap_application_t *app = dtls_get_app_data(dtls_context);
+
+  switch (type) {
+  case DTLS_PSK_IDENTITY: {
+    /* This is the client side: Credentials type DTLS_PSK_IDENTITY is
+     * invoked to set the psk_identity for the ClientKeyExchange
+     * message. */
+
+    /* TODO: Check if we have an identity for (id, session) and set
+     * result if found.
+     * Return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR) in
+     * case of an error.
+     */
+    return 0;
+  }
+
+  case DTLS_PSK_KEY: {
+    /* This invocation method is used to retrieve the key for the
+     * given psk_identity. */
+
+    /* TODO: check if we have a key for (id, session). If so, set
+     * result, otherwise try key derivation.
+     * Return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR) in
+     * case of an error.
+     */
+    return 0;
+  }
+
+  case DTLS_PSK_HINT: {
+    return 0;
+  }
+
+  default:
+    coap_log(LOG_WARNING, "unsupported request type: %d\n", type);
+  }
+
+  return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR);
 }
 
 static int 
@@ -130,7 +167,7 @@ static dtls_handler_t cb = {
   .write = dtls_send_to_peer,
   .read  = dtls_application_data,
   .event = dtls_event,
-  .get_psk_key = get_psk_key,
+  .get_psk_info = get_psk_info,
 #ifdef WITH_ECC
   .get_ecdsa_key = NULL,
   .verify_ecdsa_key = NULL
