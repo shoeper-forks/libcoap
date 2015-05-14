@@ -40,6 +40,14 @@
 #include "debug.h"
 #include "coap.h"
 
+#ifdef __GNUC__
+#define UNUSED_PARAM __attribute__ ((unused))
+#define UNUSED_FUNC __attribute__ ((unused))
+#else /* not a GCC */
+#define UNUSED_PARAM
+#define UNUSED_FUNC
+#endif /* GCC */
+
 #if HAVE_LIBTINYDTLS
 #define HAVE_STR
 #define WITH_SHA256
@@ -138,19 +146,47 @@ dtls_send_to_peer(struct dtls_context_t *ctx,
  * retrieve a key for the given identity within this particular
  * session. */
 int
-get_psk_key(struct dtls_context_t *ctx, 
-	    const session_t *session, 
-	    const unsigned char *id, size_t id_len, 
-	    const dtls_psk_key_t **result) {
+get_psk_info(struct dtls_context_t *dtls_context UNUSED_PARAM,
+	     const session_t *session UNUSED_PARAM,
+	     dtls_credentials_type_t type,
+	     const unsigned char *id, size_t id_len,
+	     unsigned char *result, size_t result_length) {
 
-  static const dtls_psk_key_t psk = {
-    .id = (unsigned char *)"Client_identity", 
-    .id_length = 15,
-    .key = (unsigned char *)"secretPSK", 
-    .key_length = 9
-  };
-   
-  *result = &psk;
+  static const unsigned char *psk_id = (unsigned char *)"Client_identity";
+  static const size_t psk_id_length = sizeof(psk_id) - 1;
+
+  static const unsigned char *psk = (unsigned char *)"secretPSK";
+  static const size_t psk_length = sizeof(psk) - 1;
+
+  switch(type) {
+  case DTLS_PSK_IDENTITY: {
+    if (result_length < psk_id_length) {
+      coap_log(LOG_WARNING, "cannot set psk_identity -- buffer too small\n");
+      return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR);
+    } else {
+      if (psk_id_length > 0) {
+	memcpy(result, psk_id, psk_id_length);
+      }
+      return psk_id_length;
+    }
+    break;
+  }
+
+  case DTLS_PSK_KEY: {
+    if (result_length < psk_length) {
+      coap_log(LOG_WARNING, "cannot set psk -- buffer too small\n");
+      return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR);
+    } else {
+      if (psk_length > 0) {
+	memcpy(result, psk, psk_length);
+      }
+      return psk_length;
+    }
+    break;
+  }
+  default:   /* nothing to do here */
+    ;
+  }
   return 0;
 }
 
@@ -158,9 +194,11 @@ static dtls_handler_t cb = {
   .write = dtls_send_to_peer,
   .read  = dtls_application_data,
   .event = NULL,
-  .get_psk_key = get_psk_key,
+  .get_psk_info = get_psk_info,
+#ifdef WITH_ECC
   .get_ecdsa_key = NULL,
   .verify_ecdsa_key = NULL
+#endif
 };
 
 #endif

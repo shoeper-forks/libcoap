@@ -30,7 +30,19 @@
 #include <tinydtls/dtls.h>
 
 dtls_context_t *dtls_context = NULL;
+
+/* Declare functions from tinydtls/debug.h */
+typedef int log_t; /* hack! */
+void dtls_set_log_level(log_t level);
 #endif
+
+#ifdef __GNUC__
+#define UNUSED_PARAM __attribute__ ((unused))
+#define UNUSED_FUNC __attribute__ ((unused))
+#else /* not a GCC */
+#define UNUSED_PARAM
+#define UNUSED_FUNC
+#endif /* GCC */
 
 int flags = 0;
 
@@ -1072,25 +1084,50 @@ dtls_send_to_peer(struct dtls_context_t *ctx,
 #define PSK_ID_MAXLEN 256
 #define PSK_MAXLEN 256
 static unsigned char psk_id[PSK_ID_MAXLEN];
-static unsigned char psk_key[PSK_MAXLEN];
-
-static dtls_psk_key_t psk = {
-  .id = psk_id, 
-  .id_length = 0,
-  .key = psk_key, 
-  .key_length = 0
-};
+static size_t psk_id_length = 0;
+static unsigned char psk[PSK_MAXLEN];
+static size_t psk_length = 0;
 
 /* This function is the "key store" for tinyDTLS. It is called to
  * retrieve a key for the given identity within this particular
  * session. */
 int
-get_psk_key(struct dtls_context_t *ctx, 
-	    const session_t *session, 
-	    const unsigned char *id, size_t id_len, 
-	    const dtls_psk_key_t **result) {
+get_psk_info(struct dtls_context_t *dtls_context UNUSED_PARAM,
+	     const session_t *session UNUSED_PARAM,
+	     dtls_credentials_type_t type,
+	     const unsigned char *id, size_t id_len,
+	     unsigned char *result, size_t result_length) {
 
-  *result = &psk;
+  switch(type) {
+
+  case DTLS_PSK_IDENTITY: {
+    if (result_length < psk_id_length) {
+      coap_log(LOG_WARNING, "cannot set psk_identity -- buffer too small\n");
+      return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR);
+    } else {
+      if (psk_id_length > 0) {
+	memcpy(result, psk_id, psk_id_length);
+      }
+      return psk_id_length;
+    }
+    break;
+  }
+
+  case DTLS_PSK_KEY: {
+    if (result_length < psk_length) {
+      coap_log(LOG_WARNING, "cannot set psk -- buffer too small\n");
+      return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR);
+    } else {
+      if (psk_length > 0) {
+	memcpy(result, psk, psk_length);
+      }
+      return psk_length;
+    }
+    break;
+  }
+  default:   /* nothing to do here */
+    ;
+  }
   return 0;
 }
 
@@ -1178,7 +1215,7 @@ static dtls_handler_t cb = {
   .write = dtls_send_to_peer,
   .read  = dtls_application_data,
   .event = NULL,
-  .get_psk_key = get_psk_key,
+  .get_psk_info = get_psk_info,
 #ifdef WITH_ECC
   .get_ecdsa_key = NULL,
   .verify_ecdsa_key = NULL
@@ -1254,20 +1291,20 @@ main(int argc, char **argv) {
       break;
 #if HAVE_LIBTINYDTLS
     case 'i' : {
-      ssize_t result = read_from_file(optarg, psk.id, PSK_ID_MAXLEN);
+      ssize_t result = read_from_file(optarg, psk_id, PSK_ID_MAXLEN);
       if (result < 0) {
 	warn("cannot read PSK identity\n");
       } else {
-	psk.id_length = result;
+	psk_id_length = result;
       }
       break;
     }
     case 'k' : {
-      ssize_t result = read_from_file(optarg, psk.key, PSK_MAXLEN);
+      ssize_t result = read_from_file(optarg, psk, PSK_MAXLEN);
       if (result < 0) {
 	warn("cannot read PSK\n");
       } else {
-	psk.key_length = result;
+	psk_length = result;
       }
       break;
     }
