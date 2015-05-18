@@ -1,6 +1,6 @@
 /* async.h -- state management for asynchronous messages
  *
- * Copyright (C) 2010,2011 Olaf Bergmann <bergmann@tzi.org>
+ * Copyright (C) 2010,2011,2015 Olaf Bergmann <bergmann@tzi.org>
  *
  * This file is part of the CoAP library libcoap. Please see
  * README for terms of use. 
@@ -130,7 +130,31 @@ coap_free_async(coap_async_state_t *state);
  * @return A pointer to the object identified by @p id or @c NULL if
  * not found.
  */
-coap_async_state_t *coap_find_async(coap_context_t *context, coap_tid_t id);
+coap_async_state_t *coap_find_async_by_id(coap_context_t *context, coap_tid_t id);
+
+/**
+ * @deprecated use coap_find_async_by_id() instead */
+static inline coap_async_state_t *
+coap_find_async(coap_context_t *context, coap_tid_t id) {
+  return coap_find_async_by_id(context, id);
+}
+
+/** 
+ * Retrieves the first object where cond(initializer, appdata) yields
+ * @c true or @c NULL if no such object exists.
+ * 
+ * @param context The context where the asynchronous objects are 
+ *                registered with.
+ * @param cond    A function that takes the @p initializer and 
+ *                the @p appdata part of a coap_async_state_t object.
+ * @param initializer An object that will be the first argument to
+ *                each call of @p cond.
+ * 
+ * @return A pointer to the first object found or @c NULL.
+ */
+coap_async_state_t *coap_find_async_conditional(coap_context_t *context,
+			int (*cond)(const void *init, const void *appdata),
+			const void *initializer);
 
 /** 
  * Updates the time stamp of @p s.

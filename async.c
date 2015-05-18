@@ -1,6 +1,6 @@
 /* async.c -- state management for asynchronous messages
  *
- * Copyright (C) 2010,2011 Olaf Bergmann <bergmann@tzi.org>
+ * Copyright (C) 2010,2011,2015 Olaf Bergmann <bergmann@tzi.org>
  *
  * This file is part of the CoAP library libcoap. Please see
  * README for terms of use. 
@@ -71,10 +71,25 @@ coap_register_async(coap_context_t *context, coap_address_t *peer,
 }
 
 coap_async_state_t *
-coap_find_async(coap_context_t *context, coap_tid_t id) {
+coap_find_async_by_id(coap_context_t *context, coap_tid_t id) {
   coap_async_state_t *tmp;
   LL_SEARCH_SCALAR(context->async_state,tmp,id,id);  
   return tmp;
+}
+
+coap_async_state_t *
+coap_find_async_conditional(coap_context_t *context, 
+			    int (*cond)(const void *init, const void *appdata),
+			    const void *initializer) {
+  coap_async_state_t *tmp;
+
+  LL_FOREACH(context->async_state,tmp) {
+    if (cond(initializer, tmp->appdata)) {
+      return tmp;
+    }
+  }
+
+  return NULL;
 }
 
 int
