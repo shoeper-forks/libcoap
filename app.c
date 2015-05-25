@@ -64,12 +64,10 @@ dtls_application_data(struct dtls_context_t *dtls_context,
   struct list_ep_t *ep_item;
   coap_endpoint_t *local_interface = NULL;
 
-  fprintf(stderr, "####### received application data...\n");
   for (ep_item = list_head(app->endpoints); ep_item;
        ep_item = list_item_next(ep_item)) {
     if (session->ifindex == ep_item->ep->handle) {
       local_interface = ep_item->ep;
-      fprintf(stderr, "####### found local interface\n");
       break;
     }
   }
@@ -79,7 +77,6 @@ dtls_application_data(struct dtls_context_t *dtls_context,
     return -3;
   }
 
-  fprintf(stderr, "####### now pass to coap_handle_message\n");
   return coap_handle_message(app->coap_context,
   			     local_interface, 
 			     (coap_address_t *)session,
@@ -638,19 +635,14 @@ coap_application_run(coap_application_t *application) {
 #endif
     coap_check_retransmit(application->coap_context, &next_coap);
     
-    coap_log(LOG_DEBUG, "next_dtls = %u\n", next_dtls);
-    coap_log(LOG_DEBUG, "next_coap = %u\n", next_coap);
     if (next_coap && (!next_dtls || next_coap < (next_dtls - now))) {
       timeval_from_ticks(next_coap, &tv);
       timeout = &tv;
-      coap_log(LOG_DEBUG, "coap timeout: %u\n", next_coap);
     } else if (next_dtls) {
       timeval_from_ticks(next_dtls - now, &tv);
       timeout = &tv;
-      coap_log(LOG_DEBUG, "dtls timeout: %u\n", next_dtls - now);
     } else {
       timeout = NULL; /* FIXME: pass timeout as parameter */
-      coap_log(LOG_DEBUG, "no timeout\n");
     }
 
     /* wait until something happens */
