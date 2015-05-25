@@ -603,9 +603,8 @@ coap_check_retransmit(coap_context_t *context, coap_tick_t *next) {
     nextpdu = coap_peek_next(context);
   }
 
-  if (next && nextpdu) {
-    coap_log(LOG_DEBUG, "coap_check_retransmit: nextpdu->t is %u\n", nextpdu->t);
-    *next = nextpdu->t;
+  if (next) {
+    *next = nextpdu ? nextpdu->t : 0;
   }
 }
 
