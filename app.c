@@ -42,6 +42,11 @@ struct list_ep_t {
   LIST_STRUCT(sendqueue);
 };
 
+static struct list_ep_t *find_ep_item(coap_application_t *, int);
+static int coap_application_push_data_item(coap_application_t *,
+					   int, coap_address_t *,
+					   unsigned char *, size_t);
+
 #if HAVE_LIBTINYDTLS
 /* This function is called from libcoap to send data on the given
  * local interface to the remote peer. */
@@ -156,10 +161,99 @@ get_psk_info(struct dtls_context_t *dtls_context,
   return dtls_alert_fatal_create(DTLS_ALERT_INTERNAL_ERROR);
 }
 
+/**
+ * Sends outstanding data for given @p session. This function returns
+ * 0 on success, or -1 on error.
+ */
+static int
+flush_data(coap_application_t *application, session_t *session) {
+  assert(application);
+  assert(session);
+
+  struct list_ep_t *ep_item = find_ep_item(application, session->ifindex);
+  struct network_data_item *data_item;
+
+  if (!ep_item) {
+    debug("flush_data: session has no attached endpoint\n");
+    return -1;
+  }
+
+  /* transmit outstanding data from local_interface destined for the
+   * same peer */
+  data_item = list_head(ep_item->sendqueue);
+
+  while (data_item) {
+    int bytes_written;
+
+    if (coap_address_equals(&data_item->remote, (coap_address_t *)session)) {
+#ifndef NDEBUG
+      if (LOG_DEBUG <= coap_get_log_level()) {
+#ifndef INET6_ADDRSTRLEN
+#define INET6_ADDRSTRLEN 40
+#endif
+	unsigned char addr[INET6_ADDRSTRLEN+8];
+
+	if (coap_print_addr((coap_address_t *)session, addr, INET6_ADDRSTRLEN+8)) {
+	  debug("flush_data: transmit outstanding %d bytes to %s\n",
+		data_item->data_length, addr);
+	}
+      }
+#endif
+      bytes_written = dtls_write(application->dtls_context, session,
+				 data_item->data, data_item->data_length);
+
+      /* FIXME: handle bytes_written < 0 (maybe throw away everything?)
+       *        handle 0 <= bytes_written < data_item->data_length
+       *            --> this case possibly means that data is memmoved and
+       *                we leave the loop
+       */
+      if (bytes_written < 0 ||
+	  (unsigned int)bytes_written == data_item->data_length) {
+	struct network_data_item *tmp;
+	tmp = data_item;
+	data_item = data_item->next;
+	list_remove(ep_item->sendqueue, tmp);
+	coap_free(tmp);
+      } else {
+	memmove(&data_item->data, data_item->data + bytes_written,
+		data_item->data_length - bytes_written);
+	/* short write; need to stop here */
+	return -1;
+      }
+    } else {
+      data_item = list_item_next(data_item);
+    }
+  }
+
+  return 0;
+}
+
 static int 
 dtls_event(struct dtls_context_t *ctx, session_t *session, 
 	   dtls_alert_level_t level, unsigned short code) {
-  debug("got event %x\n", code);
+
+  /* handle DTLS events */
+  switch (code) {
+  case DTLS_EVENT_CONNECTED: {
+    coap_application_t *application;
+    struct network_data_item *data_item;
+    struct list_ep_t *ep_item = NULL;
+    ssize_t bytes_written;
+
+    debug("DTLS_EVENT_CONNECTED\n");
+
+    application = dtls_get_app_data(ctx);
+
+    if (application) {
+      flush_data(application, session);
+    }
+
+    break;
+  }
+  default:
+    debug("unhandled event %x\n", code);
+  }
+
   return 0;
 }
 
@@ -203,6 +297,17 @@ send_to_peer(struct coap_context_t *coap_context,
     debug("call dtls_write\n");
     res = dtls_write(app->dtls_context, &session, 
 		     (uint8 *)data, len);
+
+    if (res >= 0 && (size_t)res < len) {
+      /* store remaining data in send queue */
+      if (coap_application_push_data_item(app, local_interface->handle,
+					  (coap_address_t *)&session,
+					  data + res, len - res)) {
+	debug("stored %u bytes for deferred transmission\n", len - res);
+      } else {
+	warn("could not send %u bytes\n", len - res);
+      }
+    }
   } else {
     debug("call coap_network_send\n");
     res = coap_network_send(coap_context, local_interface, remote, data, len);
@@ -327,6 +432,7 @@ coap_new_application() {
   }
   
   dtls_set_handler(app->dtls_context, &cb);
+  dtls_set_app_data(app->dtls_context, app);
 #endif
 
   /* create coap_context */
@@ -397,7 +503,8 @@ coap_application_find_endpoint(coap_application_t *application,
 
 static int
 coap_application_push_data_item(coap_application_t *application,
-				int ep_handle, unsigned char *data,
+				int ep_handle, coap_address_t *remote,
+				unsigned char *data,
 				size_t data_len) {
   struct list_ep_t *ep_item;
   int result = 0;
@@ -415,7 +522,7 @@ coap_application_push_data_item(coap_application_t *application,
     if (data_item) {
       /* initialize data item and add to endpoint's sendqueue */
       data_item->next = NULL;
-      memcpy(&data_item->remote, &ep_item->ep->addr, sizeof(coap_address_t));
+      memcpy(&data_item->remote, remote, sizeof(coap_address_t));
       data_item->data_length = data_len;
       memcpy(data_item->data, data, data_len);
    
