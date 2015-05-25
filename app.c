@@ -534,10 +534,10 @@ coap_application_run(coap_application_t *application) {
     
     coap_log(LOG_DEBUG, "next_dtls = %u\n", next_dtls);
     coap_log(LOG_DEBUG, "next_coap = %u\n", next_coap);
-    if (next_coap && (!next_dtls || next_coap < next_dtls)) {
-      timeval_from_ticks(next_coap - now, &tv);
+    if (next_coap && (!next_dtls || next_coap < (next_dtls - now))) {
+      timeval_from_ticks(next_coap, &tv);
       timeout = &tv;
-      coap_log(LOG_DEBUG, "coap timeout: %u\n", next_coap - now);
+      coap_log(LOG_DEBUG, "coap timeout: %u\n", next_coap);
     } else if (next_dtls) {
       timeval_from_ticks(next_dtls - now, &tv);
       timeout = &tv;
